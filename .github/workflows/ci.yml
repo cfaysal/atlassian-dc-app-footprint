@@ -42,13 +42,21 @@ jobs:
             "https://archive.apache.org/dist/groovy/${GROOVY_VERSION}/distribution/apache-groovy-binary-${GROOVY_VERSION}.zip"
           unzip -q /tmp/groovy.zip -d ~/groovy
 
+      # The whole lib directory cannot go on the classpath. Groovy registers an
+      # extension module from every jar it finds, and groovy-jaxb needs
+      # javax.xml.bind, which was removed from the JDK in version 11. Its
+      # registration then fails before a single line of the script is parsed, with
+      # an error that looks like a script problem and is not one. Exclude it.
       - name: Resolve Groovy classpath
         run: |
           set -euo pipefail
           GROOVY_HOME=$(find ~/groovy -maxdepth 1 -type d -name "groovy-*" | head -1)
+          GROOVY_CP=$(find "$GROOVY_HOME/lib" -name '*.jar' ! -name '*jaxb*' -print0 \
+                      | sort -z | tr '\0' ':')
           echo "GROOVY_HOME=$GROOVY_HOME" >> "$GITHUB_ENV"
-          echo "GROOVY_CP=$GROOVY_HOME/lib/*" >> "$GITHUB_ENV"
-          "$GROOVY_HOME/bin/groovy" --version
+          echo "GROOVY_CP=$GROOVY_CP" >> "$GITHUB_ENV"
+          echo "classpath jars: $(find "$GROOVY_HOME/lib" -name '*.jar' ! -name '*jaxb*' | wc -l)"
+          java -cp "$GROOVY_CP" groovy.ui.GroovyMain -e 'println "groovy " + GroovySystem.version'
 
       # The parse check compiles each endpoint to the CONVERSION phase. That validates
       # syntax without resolving a single Jira or Confluence symbol, which is the most
