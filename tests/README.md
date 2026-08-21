@@ -35,9 +35,9 @@ file so that the tests always run against the shipped source rather than a copy 
 drift.
 
 ```bash
-cd jira/tests
+cd tests
 
-F=../jiraDCappFootprint.groovy
+F=../endpoints/jiraDCappFootprint.groovy
 START=$(grep -n '^class Fp {' "$F" | cut -d: -f1)
 END=$(( $(grep -n '^ \* REST Endpoint$' "$F" | cut -d: -f1) - 2 ))
 sed -n "${START},${END}p" "$F" > /tmp/classes.groovy
@@ -56,7 +56,7 @@ syntax without resolving any Jira symbol, so it runs anywhere:
 
 ```bash
 java -Dfile.encoding=UTF-8 -cp "$GROOVY" groovy.ui.GroovyMain \
-     ../../tools/parsecheck.groovy ../jiraDCappFootprint.groovy
+     ../tools/parsecheck.groovy ../endpoints/jiraDCappFootprint.groovy
 ```
 
 A green run prints `PARSE OK` followed by the parsed class names.
