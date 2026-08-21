@@ -42,13 +42,13 @@ Keep comments and identifiers in English.
 
    ```bash
    java -Dfile.encoding=UTF-8 -cp groovy-3.0.21.jar groovy.ui.GroovyMain \
-        tools/parsecheck.groovy jira/jiraDCappFootprint.groovy
+        tools/parsecheck.groovy endpoints/jiraDCappFootprint.groovy
    ```
 
    A green run prints `PARSE OK`.
 
 2. Run the offline test suite if you touched the Jira script. See
-   [`jira/tests/README.md`](jira/tests/README.md).
+   [`tests/README.md`](tests/README.md).
 
 3. Say in the pull request which instance you tested against, including the product
    version and the ScriptRunner version. "Builds fine" is not a test result for a script

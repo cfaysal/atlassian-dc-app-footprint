@@ -8,14 +8,10 @@ Neither tells you that app X owns 41 custom fields on 312 000 issues and is wire
 17 workflows, while app Y has been installed for four years and is referenced nowhere.
 These scripts measure that difference.
 
-> **The endpoint files are not in this repository yet.** Both are being finalised and
-> land here shortly, together with the Jira test suite. Everything else, including the
-> documented behaviour below, is in place. Watch the repository to be notified.
-
 | Script | Platform | Version |
 | --- | --- | --- |
-| `jira/jiraDCappFootprint.groovy` | Jira Data Center | 3.1 |
-| `confluence/confluenceDCappFootprint.groovy` | Confluence Data Center | 4.3 |
+| [`endpoints/jiraDCappFootprint.groovy`](endpoints/jiraDCappFootprint.groovy) | Jira Data Center | 3.1 |
+| [`endpoints/confluenceDCappFootprint.groovy`](endpoints/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.3 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
 building the removal-risk section of an audit report, or justifying to a budget owner
@@ -135,7 +131,7 @@ for a full-looking table.
 ## Tests
 
 The Jira script ships a test suite that runs offline, without a Jira instance. See
-[`jira/tests/README.md`](jira/tests/README.md) for what it covers and how to run it. The
+[`tests/README.md`](tests/README.md) for what it covers and how to run it. The
 Confluence suite does not exist yet.
 
 Every push and pull request also runs a parse check over both endpoints and two hygiene

@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           found=0
-          for f in jira/jiraDCappFootprint.groovy confluence/confluenceDCappFootprint.groovy; do
+          for f in endpoints/jiraDCappFootprint.groovy endpoints/confluenceDCappFootprint.groovy; do
             if [ -f "$f" ]; then
               found=1
               echo "::group::parse $f"
@@ -76,8 +76,8 @@ jobs:
       - name: Offline test suite (Jira)
         run: |
           set -euo pipefail
-          F=jira/jiraDCappFootprint.groovy
-          T=jira/tests/jiraDCappFootprint.tests.groovy
+          F=endpoints/jiraDCappFootprint.groovy
+          T=tests/jiraDCappFootprint.tests.groovy
           if [ ! -f "$F" ] || [ ! -f "$T" ]; then
             echo "::notice title=Not present::Jira endpoint or test suite missing, suite skipped."
             exit 0
