@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GROOVY_VERSION: "3.0.21"
+
+jobs:
+  verify:
+    name: Parse check and offline tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache Groovy distribution
+        id: groovy-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/groovy
+          key: groovy-${{ env.GROOVY_VERSION }}
+
+      - name: Download Groovy
+        if: steps.groovy-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/groovy
+          curl -fsSL -o /tmp/groovy.zip \
+            "https://archive.apache.org/dist/groovy/${GROOVY_VERSION}/distribution/apache-groovy-binary-${GROOVY_VERSION}.zip"
+          unzip -q /tmp/groovy.zip -d ~/groovy
+
+      - name: Resolve Groovy classpath
+        run: |
+          set -euo pipefail
+          GROOVY_HOME=$(find ~/groovy -maxdepth 1 -type d -name "groovy-*" | head -1)
+          echo "GROOVY_HOME=$GROOVY_HOME" >> "$GITHUB_ENV"
+          echo "GROOVY_CP=$GROOVY_HOME/lib/*" >> "$GITHUB_ENV"
+          "$GROOVY_HOME/bin/groovy" --version
+
+      # The parse check compiles each endpoint to the CONVERSION phase. That validates
+      # syntax without resolving a single Jira or Confluence symbol, which is the most
+      # that can be verified off-instance. It does not prove the script runs.
+      - name: Parse check
+        run: |
+          set -euo pipefail
+          found=0
+          for f in jira/jiraDCappFootprint.groovy confluence/confluenceDCappFootprint.groovy; do
+            if [ -f "$f" ]; then
+              found=1
+              echo "::group::parse $f"
+              java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain tools/parsecheck.groovy "$f"
+              echo "::endgroup::"
+            else
+              echo "::notice title=Not present::$f is not in the repository yet, parse check skipped."
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::warning title=Nothing parsed::No endpoint file was present to check."
+          fi
+
+      # The suite is compiled together with the helper classes cut from the endpoint
+      # itself, so it always tests the shipped source rather than a copy that can drift.
+      - name: Offline test suite (Jira)
+        run: |
+          set -euo pipefail
+          F=jira/jiraDCappFootprint.groovy
+          T=jira/tests/jiraDCappFootprint.tests.groovy
+          if [ ! -f "$F" ] || [ ! -f "$T" ]; then
+            echo "::notice title=Not present::Jira endpoint or test suite missing, suite skipped."
+            exit 0
+          fi
+          START=$(grep -n '^class Fp {' "$F" | cut -d: -f1)
+          END=$(( $(grep -n '^ \* REST Endpoint$' "$F" | cut -d: -f1) - 2 ))
+          if [ -z "$START" ] || [ "$END" -le "$START" ]; then
+            echo "::error title=Cut markers moved::Could not locate the helper class block in $F."
+            exit 1
+          fi
+          sed -n "${START},${END}p" "$F" > /tmp/classes.groovy
+          cat /tmp/classes.groovy "$T" > /tmp/testsuite.groovy
+          java -Xmx2g -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain /tmp/testsuite.groovy
+
+  hygiene:
+    name: Publication hygiene
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # These scripts are pasted into administrative consoles on production instances.
+      # A credential or an internal hostname reaching this repository would be a real
+      # incident, so the gate runs on every change rather than on trust in a past scan.
+      - name: Scan for credentials and internal references
+        run: |
+          set -uo pipefail
+          fail=0
+          files=$(git ls-files '*.groovy')
+          [ -z "$files" ] && { echo "No Groovy files to scan yet."; exit 0; }
+          for f in $files; do
+            hits=$(grep -nEi 'password[[:space:]]*=|api[_-]?key[[:space:]]*=|bearer[[:space:]]+[A-Za-z0-9]|BEGIN (RSA|OPENSSH|DSA|EC|PRIVATE)|xox[baprs]-|ATATT[A-Za-z0-9]|gh[pous]_[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|192\.168\.[0-9]+\.[0-9]+' "$f" || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::Possible credential or internal reference"
+              echo "$hits"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # Read-only is the central promise of this project. If an outbound call or a write
+      # ever appears in one of the endpoints, that promise is broken and the README lies.
+      - name: Assert no outbound network call
+        run: |
+          set -uo pipefail
+          fail=0
+          files=$(git ls-files '*.groovy')
+          [ -z "$files" ] && exit 0
+          for f in $files; do
+            hits=$(grep -nE 'new URL\(|URLConnection|HttpURLConnection|HttpClient|\.toURL\(\)|Socket\(' "$f" || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::Possible outbound network call, which this project does not allow"
+              echo "$hits"
+              fail=1
+            fi
+          done
+          exit $fail

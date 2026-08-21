@@ -1,0 +1,35 @@
+# Build and dependency artifacts
+target/
+build/
+out/
+*.jar
+*.class
+
+# Generated reports produced by the endpoints
+*.report.html
+*.report.json
+*.report.csv
+reports/
+
+# Local scratch and superseded versions
+_deprecated/
+*.orig
+*.rej
+*.bak
+*~
+*-v[0-9]*.groovy
+*.local.*
+
+# Editors and OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Maintainer-local sync configuration, never published.
+.sync/

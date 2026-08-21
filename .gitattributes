@@ -1,0 +1,12 @@
+# Normalise all text to LF in the repository.
+* text=auto eol=lf
+
+*.groovy  text eol=lf
+*.md      text eol=lf
+*.sh      text eol=lf
+*.yml     text eol=lf
+
+# Never touch binaries.
+*.png binary
+*.jpg binary
+*.pdf binary
