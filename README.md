@@ -1,6 +1,6 @@
 # Atlassian Data Center App Footprint
 
-Two read-only ScriptRunner REST endpoints that answer one question about a Data Center
+Two ScriptRunner REST endpoints that answer one question about a Data Center
 instance: **how much of this instance would actually break if a given app were removed?**
 
 The Marketplace tells you which apps are installed. The UPM tells you which are enabled.
@@ -10,8 +10,8 @@ These scripts measure that difference.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`endpoints/jiraDCappFootprint.groovy`](endpoints/jiraDCappFootprint.groovy) | Jira Data Center | 3.1 |
-| [`endpoints/confluenceDCappFootprint.groovy`](endpoints/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.3 |
+| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.1 |
+| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.3 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
 building the removal-risk section of an audit report, or justifying to a budget owner
@@ -22,9 +22,21 @@ why a rarely-used app is or is not expensive to drop.
 Both endpoints share the same discipline, and it is the reason the output is worth
 trusting:
 
-- **Read-only.** No write path exists. No configuration is created, changed or deleted.
-- **No outbound network call.** Nothing is sent anywhere. The report is a self-contained
-  artifact produced inside your instance.
+- **Read-only by default.** The analysis never writes. No configuration is created,
+  changed or deleted. The single exception is the Confluence page export, offered by
+  both endpoints and run only when an administrator explicitly requests it: one page,
+  in a space they choose, protected by a marker so this export can never overwrite a
+  page it did not create.
+- **No outbound network call during analysis.** Producing a report contacts nothing
+  outside your instance, in either endpoint and in every format. The report is a
+  self-contained artifact.
+  The one exception is the Jira endpoint's page export. Confluence is a separate
+  instance from Jira, so writing a page there necessarily leaves Jira. That call goes
+  only to the Confluence instance you select from your configured application links,
+  only after you open the export and choose a target, and only to look up spaces and
+  pages and write the one page you asked for. Opening the report makes no such call.
+  The Confluence endpoint writes through the local Confluence API and makes no network
+  call at all.
 - **Admin-gated.** Restricted to `jira-administrators` and `confluence-administrators`
   respectively, enforced by ScriptRunner, not by the script.
 - **A failed read is never rendered as a measured zero.** If a count could not be taken,
@@ -51,9 +63,31 @@ The Confluence script targets Confluence 10 with ScriptRunner 10 or newer
 
 ## Installation
 
-1. Go to **Administration > ScriptRunner > REST Endpoints**.
-2. Choose **Custom endpoint** and paste the entire file contents.
-3. Save. ScriptRunner registers the endpoint under the name `appFootprint`.
+Install the script as a **file in your script root**, not as an inline script.
+
+1. Put the `.groovy` file into your ScriptRunner script root.
+2. Go to **Administration > ScriptRunner > REST Endpoints**.
+3. Choose **Custom endpoint**, switch it from inline to **File**, and point it at the
+   file you just placed.
+4. Save. ScriptRunner registers the endpoint under the name `appFootprint`.
+
+Pasting the code inline works for small scripts and fails for these. ScriptRunner stores
+an inline script as a serialised configuration property, and that property is capped:
+saving a large one is refused with
+
+```
+Serialized value cannot be longer than 99,000 characters
+```
+
+The refusal happens while saving the endpoint configuration, before Groovy is compiled or
+run, so it is not a Groovy or a Confluence limit. The cap counts the serialised value
+rather than the characters you see in the editor, and escaping adds to it, so a script
+somewhat below the number can already be rejected. Both endpoints in this repository are
+well past it.
+
+A file in the script root has no such cap: the endpoint stores only the reference. It is
+also the better home for a script this size, because it can be versioned and diffed
+instead of living in a text box.
 
 Call it as an administrator:
 
@@ -96,6 +130,52 @@ All parameters are optional and are appended as query parameters.
 | `appKey` | plugin key | none | Restrict the report to a single app. |
 | `numbers` | `de`, `en` | `de` | Thousands separator style. |
 
+## Export to Confluence
+
+Both reports can write their executive summary into Confluence as a page. This is the only
+write either script performs, and it happens only when an administrator asks for it in the
+report.
+
+Nothing is looked up until the export is opened. Rendering a report reads no application
+links, no spaces and no pages. Open the export, and the Jira endpoint lists the Confluence
+application links you have configured; the Confluence endpoint writes into its own
+instance and needs no link at all. Then pick a space, optionally name a parent page, give
+the page a title, and submit. A repeat run updates the same page instead of creating a
+second one, and the answer carries a link to it.
+
+The parent page field searches while you type and the result list stays until you pick an
+entry or clear the field. If no page matches, the field says so and the parent is created
+during generation. There is no separate button for that: a title with no page picked is
+the instruction. Immediately before creating, the endpoint checks the exact title in that
+space once more and adopts an existing page rather than creating a second one with the
+same title. If the parent cannot be created, the run stops and says so; the report is
+never filed at the top level as a consolation prize.
+
+A parent named in a run is an instruction, so it is applied to a page that already exists
+as well. Name no parent and the page keeps the position an administrator gave it. After
+writing, the endpoint reads the page back and compares its innermost ancestor with the
+parent you asked for. It reports the measurement rather than the call: the page was moved,
+it was not moved, or the position could not be read back at all. A failed read is never
+rendered as a successful move.
+
+The generated page carries a **Decision** column. Write `KEEP`, `REMOVE` or whatever note
+fits, and it survives every later run. Three rules protect it:
+
+- The decision cell is carried over verbatim, including your own wording and markup, not
+  just the keyword.
+- Columns are located by their header name, never by position, so an added column does not
+  orphan your notes.
+- If the existing page cannot be read or parsed, nothing is written at all. A failed read
+  never becomes an empty Decision column, and the export reports the failure instead of
+  quietly succeeding.
+
+A generated page carries a marker. A page with a colliding title that does not carry it is
+treated as a failed read, so this export cannot overwrite a page it did not create.
+
+If an app disappears between two runs, its note has nowhere to go. Rather than dropping it
+silently, the page lists it under the decisions without a matching app and says how many
+were carried over.
+
 ## Counting semantics
 
 Read this before quoting a number to a customer.
@@ -130,19 +210,25 @@ for a full-looking table.
 
 ## Tests
 
-The Jira script ships a test suite that runs offline, without a Jira instance. See
-[`tests/README.md`](tests/README.md) for what it covers and how to run it. The
-Confluence suite does not exist yet.
+Both scripts ship a test suite that runs offline, without a running instance. See
+[`jira/tests/README.md`](jira/tests/README.md) and
+[`confluence/tests/README.md`](confluence/tests/README.md) for what each covers and how to
+run it.
 
-Every push and pull request also runs a parse check over both endpoints and two hygiene
-gates: one that scans for credentials and internal references, and one that asserts no
-outbound network call was introduced. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+The Confluence suite carries a control implementation of the discarded decision parser and
+asserts on every run that the real parser refuses malformed input the control accepts. A
+suite that has never been red proves nothing, so the discriminating power is measured
+rather than assumed.
+
+Every push and pull request runs both suites, a parse check over both endpoints, and two
+hygiene gates: one that scans for credentials and internal references, and one that asserts
+no outbound network call was introduced. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Status
 
 Both scripts are in active development and the interface may still change. The counting
-discipline described above will not: read-only, no outbound call, and never a failed read
-rendered as a measured zero.
+discipline described above will not: no outbound call, no write the administrator did not
+ask for, and never a failed read rendered as a measured zero.
 
 ## Licence
 

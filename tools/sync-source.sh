@@ -12,6 +12,7 @@
 #   jiraDCappFootprint.groovy
 #   confluenceDCappFootprint.groovy
 #   tests/jiraDCappFootprint.tests.groovy
+#   tests/confluenceDCappFootprint.tests.groovy
 #   tests/parsecheck.groovy
 #
 # The script copies, verifies byte identity by SHA-256, and reports. It never pushes.
@@ -32,9 +33,10 @@ fi
 
 # path-in-source : path-in-repo
 FILES=(
-    "jiraDCappFootprint.groovy:endpoints/jiraDCappFootprint.groovy"
-    "confluenceDCappFootprint.groovy:endpoints/confluenceDCappFootprint.groovy"
-    "tests/jiraDCappFootprint.tests.groovy:tests/jiraDCappFootprint.tests.groovy"
+    "jiraDCappFootprint.groovy:jira/jiraDCappFootprint.groovy"
+    "confluenceDCappFootprint.groovy:confluence/confluenceDCappFootprint.groovy"
+    "tests/jiraDCappFootprint.tests.groovy:jira/tests/jiraDCappFootprint.tests.groovy"
+    "tests/confluenceDCappFootprint.tests.groovy:confluence/tests/confluenceDCappFootprint.tests.groovy"
     "tests/parsecheck.groovy:tools/parsecheck.groovy"
 )
 
@@ -95,10 +97,13 @@ done
 # A stale version number in the README is how a document starts describing a state the
 # code never had. The header of each script is the single source of truth.
 echo "== version lockstep =="
-jver=$(grep -m1 -oE '^ \* Version [0-9]+\.[0-9]+' "$REPO/endpoints/jiraDCappFootprint.groovy" | grep -oE '[0-9]+\.[0-9]+')
-cver=$(grep -m1 -oE '^ \* Version [0-9]+\.[0-9]+' "$REPO/endpoints/confluenceDCappFootprint.groovy" | grep -oE '[0-9]+\.[0-9]+')
+# The version lives in exactly one place per script, the VERSION constant. The file
+# header deliberately carries no number any more: a header and a constant are two
+# places to change and one of them is always forgotten.
+jver=$(grep -m1 -oE 'VERSION *= *"[0-9]+\.[0-9]+"' "$REPO/jira/jiraDCappFootprint.groovy" | grep -oE '[0-9]+\.[0-9]+')
+cver=$(grep -m1 -oE 'VERSION *= *"[0-9]+\.[0-9]+"' "$REPO/confluence/confluenceDCappFootprint.groovy" | grep -oE '[0-9]+\.[0-9]+')
 if [ -z "$jver" ] || [ -z "$cver" ]; then
-    echo "  error: could not read a version header from one of the scripts." >&2
+    echo "  error: could not read a VERSION constant from one of the scripts." >&2
     exit 1
 fi
 echo "  jira=$jver  confluence=$cver"

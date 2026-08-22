@@ -2,9 +2,26 @@
 
 ## What these scripts do and do not do
 
-Both endpoints are read-only. They contain no write path and open no outbound network
-connection. Everything they produce is generated inside your own instance and returned to
-the calling administrator.
+Producing a report opens no outbound network connection, in either endpoint and in every
+output format. Everything it produces is generated inside your own instance and returned
+to the calling administrator. The analysis is read-only and creates, changes or deletes
+no configuration.
+
+Both endpoints additionally offer a page export. It writes exactly one Confluence page,
+only when an administrator explicitly requests it, and only into the space they select.
+A generated page carries a marker, and the export refuses to touch a page that does not
+carry it, so it cannot overwrite a page it did not create. If the existing page cannot be
+read or parsed, nothing is written at all.
+
+The two endpoints reach Confluence differently, and the difference matters for you:
+
+* The **Confluence endpoint** writes through the local Confluence API. No network
+  connection is opened at any point.
+* The **Jira endpoint** writes to a separate Confluence instance, so the call leaves
+  Jira. It travels over an application link you have already configured and trust, using
+  its existing authentication, as the administrator who runs the export. Nothing is sent
+  anywhere else. Opening the report triggers no call at all: application links are read
+  only after you open the export, and spaces and pages only after you pick a target.
 
 Access is gated by ScriptRunner using the `groups` attribute on the endpoint:
 `jira-administrators` for the Jira script, `confluence-administrators` for the Confluence

@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           found=0
-          for f in endpoints/jiraDCappFootprint.groovy endpoints/confluenceDCappFootprint.groovy; do
+          for f in jira/jiraDCappFootprint.groovy confluence/confluenceDCappFootprint.groovy; do
             if [ -f "$f" ]; then
               found=1
               echo "::group::parse $f"
@@ -84,8 +84,8 @@ jobs:
       - name: Offline test suite (Jira)
         run: |
           set -euo pipefail
-          F=endpoints/jiraDCappFootprint.groovy
-          T=tests/jiraDCappFootprint.tests.groovy
+          F=jira/jiraDCappFootprint.groovy
+          T=jira/tests/jiraDCappFootprint.tests.groovy
           if [ ! -f "$F" ] || [ ! -f "$T" ]; then
             echo "::notice title=Not present::Jira endpoint or test suite missing, suite skipped."
             exit 0
@@ -99,6 +99,33 @@ jobs:
           sed -n "${START},${END}p" "$F" > /tmp/classes.groovy
           cat /tmp/classes.groovy "$T" > /tmp/testsuite.groovy
           java -Xmx2g -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain /tmp/testsuite.groovy
+
+      # Same idea as the Jira suite, but the Confluence helper classes sit in two blocks
+      # with Analyzer between them. Analyzer touches Confluence types, so it is cut out.
+      - name: Offline test suite (Confluence)
+        run: |
+          set -euo pipefail
+          F=confluence/confluenceDCappFootprint.groovy
+          T=confluence/tests/confluenceDCappFootprint.tests.groovy
+          if [ ! -f "$F" ] || [ ! -f "$T" ]; then
+            echo "::notice title=Not present::Confluence endpoint or test suite missing, suite skipped."
+            exit 0
+          fi
+          A_START=$(grep -n '^class Cfp {' "$F" | cut -d: -f1)
+          A_END=$(( $(grep -n '^class Analyzer {' "$F" | cut -d: -f1) - 1 ))
+          B_START=$(grep -n '^class DecisionRead {' "$F" | cut -d: -f1)
+          B_END=$(( $(grep -n '^appFootprint(' "$F" | head -1 | cut -d: -f1) - 1 ))
+          if [ -z "$A_START" ] || [ "$A_END" -le "$A_START" ] || [ -z "$B_START" ] || [ "$B_END" -le "$B_START" ]; then
+            echo "::error title=Cut markers moved::Could not locate the helper class blocks in $F."
+            exit 1
+          fi
+          { echo 'import java.util.regex.Matcher'
+            echo 'import java.util.regex.Pattern'
+            sed -n "${A_START},${A_END}p" "$F"
+            sed -n "${B_START},${B_END}p" "$F"
+            cat "$T"
+          } > /tmp/conf_testsuite.groovy
+          java -Xmx2g -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain /tmp/conf_testsuite.groovy
 
   hygiene:
     name: Publication hygiene
@@ -126,16 +153,24 @@ jobs:
           done
           exit $fail
 
-      # Read-only is the central promise of this project. If an outbound call or a write
-      # ever appears in one of the endpoints, that promise is broken and the README lies.
-      - name: Assert no outbound network call
+      # The Jira endpoint reaches Confluence over an application link, which is declared in
+      # README and SECURITY. Everything else must stay call-free, and that is what this job
+      # holds. Note what a raw-HTTP grep alone would miss: an application link call goes
+      # through ApplicationLinkRequestFactory and matches none of the HTTP patterns, so the
+      # job would report green while an outbound call existed. The applink patterns are
+      # therefore checked everywhere they are not declared.
+      - name: Assert no undeclared outbound network call
         run: |
           set -uo pipefail
           fail=0
           files=$(git ls-files '*.groovy')
           [ -z "$files" ] && exit 0
           for f in $files; do
-            hits=$(grep -nE 'new URL\(|URLConnection|HttpURLConnection|HttpClient|\.toURL\(\)|Socket\(' "$f" || true)
+            case "$f" in
+              jira/*) pattern='new URL\(|URLConnection|HttpURLConnection|HttpClient|\.toURL\(\)|Socket\(' ;;
+              *)      pattern='new URL\(|URLConnection|HttpURLConnection|HttpClient|\.toURL\(\)|Socket\(|ApplicationLink|createAuthenticatedRequestFactory|createImpersonatingAuthenticatedRequestFactory' ;;
+            esac
+            hits=$(grep -nE "$pattern" "$f" || true)
             if [ -n "$hits" ]; then
               echo "::error file=$f::Possible outbound network call, which this project does not allow"
               echo "$hits"

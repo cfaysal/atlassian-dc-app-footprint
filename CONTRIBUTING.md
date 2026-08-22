@@ -16,11 +16,20 @@ a plausible-looking number will be rejected no matter how much cleaner the code 
 The reason is simple: these reports are used to decide whether an app can be removed. A
 false zero is not a cosmetic bug, it is a wrong answer to an expensive question.
 
-**2. No write path, no outbound call.**
+**2. No call and no write the administrator did not ask for.**
 
-Both endpoints are read-only audit instruments. They must not create, modify or delete
-configuration, and they must not open a network connection to anything. Contributions that
-add either are out of scope for this project.
+Both endpoints are audit instruments. Producing a report must not create, modify or
+delete configuration, and must not open a network connection to anything.
+
+The one write that exists is the Confluence page export, and it stays bound to its rules:
+an explicit request, a single page, a marker that prevents overwriting a foreign page,
+and no write at all when the existing page cannot be read.
+
+The Jira endpoint's export is the only place a call leaves the instance, because
+Confluence is a separate instance there. It stays bound too: an application link the
+administrator already configured, chosen by them, contacted only after they open the
+export. A contribution that makes a call outside this path, or that makes any call while
+a report is merely being rendered, is out of scope.
 
 ## Practical constraints
 
@@ -42,13 +51,14 @@ Keep comments and identifiers in English.
 
    ```bash
    java -Dfile.encoding=UTF-8 -cp groovy-3.0.21.jar groovy.ui.GroovyMain \
-        tools/parsecheck.groovy endpoints/jiraDCappFootprint.groovy
+        tools/parsecheck.groovy jira/jiraDCappFootprint.groovy
    ```
 
    A green run prints `PARSE OK`.
 
 2. Run the offline test suite if you touched the Jira script. See
-   [`tests/README.md`](tests/README.md).
+   [`jira/tests/README.md`](jira/tests/README.md) and
+   [`confluence/tests/README.md`](confluence/tests/README.md).
 
 3. Say in the pull request which instance you tested against, including the product
    version and the ScriptRunner version. "Builds fine" is not a test result for a script
