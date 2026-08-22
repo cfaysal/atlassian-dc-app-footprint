@@ -17,6 +17,10 @@ Typical uses: app consolidation before a licence renewal, scoping a Cloud migrat
 building the removal-risk section of an audit report, or justifying to a budget owner
 why a rarely-used app is or is not expensive to drop.
 
+How this sits next to the Jira and Confluence Cloud Migration Assistants, and next to
+App Usage for Jira, is described under
+[Relation to the Atlassian migration tools](#relation-to-the-atlassian-migration-tools).
+
 ## Properties
 
 Both endpoints share the same discipline, and it is the reason the output is worth
@@ -223,6 +227,64 @@ rather than assumed.
 Every push and pull request runs both suites, a parse check over both endpoints, and two
 hygiene gates: one that scans for credentials and internal references, and one that asserts
 no outbound network call was introduced. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+## Relation to the Atlassian migration tools
+
+Atlassian ships its own assessment tooling. The honest answer to "why not just use that" is
+that those tools answer a neighbouring question, with one real overlap.
+
+The **Jira Cloud Migration Assistant** lists installed apps with cloud availability, a
+migration path and a decision. It does not measure configuration. Its only usage column is a
+set of links into a separate plugin, and the documentation says so plainly: "App usage:
+Displays links to app's usage information in the App usage for Jira plug-in. This column only
+appears if App Usage for Jira is installed and enabled."
+
+The **Confluence Cloud Migration Assistant** does measure macro usage, inside a fixed window:
+"Appears on: This column shows you how many pages the macros of a given app appears on in the
+last 30 days", with a second column counting the views over the same window. A macro sitting
+on a page nobody has opened in thirty-one days does not appear there.
+
+**App Usage** is part of Data Center administration itself, and it is the real overlap. In
+Jira it presents tabs for common usage data, user interactions, custom fields, workflows and
+dashboards, including the number of issues that have a value for an app-provided field and the
+conditions, validators and post functions an app contributes per workflow transition. In
+Confluence the equivalent view is documented as "Available in: Confluence Data Center 10.2.11
+and 9.2.20, and later patch releases" and reports a macro Page count, "The number of unique
+pages in the site that contain this macro", alongside Active Objects tables and REST activity.
+
+Read its own caveats before treating it as a verdict. Jira's App Usage opens with the banner
+"App usage data is indicative, so make sure you investigate it further before making any
+decision about this app." On custom fields it states that "an app can use many custom fields
+within Jira, but this is not tracked: this table shows only the custom field types that will
+most likely stop working if you remove or disable an app." On REST activity: "tracking only
+begins after you've installed and enabled App Usage. It therefore can't display data about any
+API calls from the days, weeks, and months before App Usage was enabled." The table view is
+limited to tables an app declared through Active Objects.
+
+Said plainly: on a current Data Center, App Usage already answers a good part of what these
+endpoints report, and it answers questions about runtime activity that they deliberately do
+not ask.
+
+What these endpoints add on top:
+
+- **Nothing depends on when tracking was switched on.** The measurement reads the current
+  configuration and the content index at the moment of the run. There is no collection period
+  to have missed, and no thirty day window that decides whether a macro counts.
+- **Screen and screen scheme placements per app-provided field**, which the App Usage tabs do
+  not cover.
+- **Archived spaces are their own dimension** in Confluence, never blended into the current
+  totals and never silently dropped. The documented App Usage column is a single site-wide
+  page count.
+- **A read that failed or ran out of budget is labelled NOT MEASURED** at the exact cell. An
+  empty result and a broken result never look alike.
+- **One self-contained artifact for both products**, in HTML, JSON and CSV, readable by
+  someone who has no access to the instance.
+- **The Decision column lives in a Confluence page**, which outlives the Data Center instance
+  the decision is about.
+
+What they do not do: they do not measure clicks, views or runtime user activity. An app with
+no detectable configuration footprint can still be in daily use through a UI, a REST client or
+a scheduled job. The reports say so at the top of every run, and this is the same statement.
 
 ## Status
 

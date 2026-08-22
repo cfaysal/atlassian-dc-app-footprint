@@ -56,6 +56,14 @@ published in this repository.
 
 ### Changed
 
+- **The README names the Atlassian tooling these endpoints sit next to.** A new section
+  describes the Jira and Confluence Cloud Migration Assistants and the App Usage view that
+  Data Center administration ships itself, quotes what their documentation actually promises,
+  and states where these endpoints add something and where they do not. App Usage is named as
+  the real overlap: on a current Data Center it already answers a good part of the same
+  questions, and it answers runtime questions these endpoints deliberately do not ask. Its own
+  caveats are quoted rather than paraphrased, including that its data is "indicative" and that
+  REST tracking "only begins after you've installed and enabled App Usage".
 - **Repository layout.** Each product now has its own directory, `jira/` and `confluence/`,
   each holding the endpoint and its `tests/`.
 - The read-only wording in `README.md`, `SECURITY.md` and `CONTRIBUTING.md` now states the
