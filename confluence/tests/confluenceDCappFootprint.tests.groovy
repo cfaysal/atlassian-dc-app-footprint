@@ -1380,10 +1380,12 @@ ok("persistence SpaceService is imported",
     endpointText.contains("import com.atlassian.confluence.content.service.SpaceService"))
 ok("API SpaceService is imported with a distinct name",
     endpointText.contains("import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService"))
+ok("API Expansion is imported for an explicitly typed empty varargs call",
+    endpointText.contains("import com.atlassian.confluence.api.model.Expansion"))
 ok("API SpaceFinder is imported for ScriptRunner static checking",
     endpointText.contains("import com.atlassian.confluence.api.service.content.SpaceService.SpaceFinder"))
 check("the API space finder keeps an explicit static type",
-    endpointText.count("SpaceFinder currentSpaceFinder = apiSpaceService.find()"), 1)
+    endpointText.count("SpaceFinder currentSpaceFinder = apiSpaceService.find(new Expansion[0])"), 1)
 check("the current-space finder is paginated", endpointText.count(".withStatus(ApiSpaceStatus.CURRENT)"), 1)
 check("pagination fetches through the typed finder",
     endpointText.count("currentSpaceFinder.fetchMany("), 1)

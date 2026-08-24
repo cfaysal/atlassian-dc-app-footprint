@@ -59,11 +59,13 @@
  * =============================================================================
  */
 
+import com.atlassian.confluence.api.model.Expansion
 import com.atlassian.confluence.api.model.content.Space as ApiSpace
 import com.atlassian.confluence.api.model.content.SpaceStatus as ApiSpaceStatus
 import com.atlassian.confluence.api.model.pagination.PageResponse
 import com.atlassian.confluence.api.model.pagination.SimplePageRequest
 import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService
+import com.atlassian.confluence.api.service.content.SpaceService.SpaceFinder
 import com.atlassian.confluence.core.BodyContent
 import com.atlassian.confluence.core.BodyType
 import com.atlassian.confluence.core.DefaultSaveContext
@@ -3728,11 +3730,11 @@ appFootprint(
              * that claims more results without advancing is a failed inventory. */
             int spaceStart = 0
             final int spacePageSize = 100
+            SpaceFinder currentSpaceFinder = apiSpaceService.find(new Expansion[0])
+            currentSpaceFinder = currentSpaceFinder.withStatus(ApiSpaceStatus.CURRENT)
             while (true) {
-                PageResponse<ApiSpace> spacePage = apiSpaceService
-                    .find()
-                    .withStatus(ApiSpaceStatus.CURRENT)
-                    .fetchMany(new SimplePageRequest(spaceStart, spacePageSize))
+                PageResponse<ApiSpace> spacePage = currentSpaceFinder.fetchMany(
+                    new SimplePageRequest(spaceStart, spacePageSize))
                 for (ApiSpace space : spacePage.getResults()) {
                     String key = space == null ? null : space.getKey()
                     if (key == null) {
