@@ -682,6 +682,182 @@ class WorkflowReference {
     }
 }
 
+/* =============================================================================
+ * Impact model
+ * ========================================================================== */
+
+class ImpactPolicy {
+    static final BigDecimal CRITICAL_PERCENT = new BigDecimal("50")
+    static final BigDecimal HIGH_PERCENT = new BigDecimal("20")
+    static final BigDecimal MEDIUM_PERCENT = new BigDecimal("5")
+
+    static int rankFor(ImpactDimension dimension) {
+        if (dimension == null || !dimension.available() || dimension.numerator <= 0L) {
+            return 0
+        }
+        BigDecimal scaledNumerator = BigDecimal.valueOf(dimension.numerator)
+            .multiply(BigDecimal.valueOf(100L))
+        BigDecimal denominator = BigDecimal.valueOf(dimension.denominator.longValue())
+        if (scaledNumerator.compareTo(denominator.multiply(CRITICAL_PERCENT)) >= 0) {
+            return 7
+        }
+        if (scaledNumerator.compareTo(denominator.multiply(HIGH_PERCENT)) >= 0) {
+            return 6
+        }
+        if (scaledNumerator.compareTo(denominator.multiply(MEDIUM_PERCENT)) >= 0) {
+            return 5
+        }
+        return 4
+    }
+
+    static ImpactAssessment assess(List<ImpactDimension> dimensions, boolean incomplete) {
+        List<ImpactDimension> safe = dimensions == null ?
+            Collections.<ImpactDimension>emptyList() : dimensions
+        ImpactAssessment result = new ImpactAssessment()
+        result.dimensions.addAll(safe)
+
+        int selectedRank = 0
+        boolean unavailablePositive = false
+        for (ImpactDimension dimension : safe) {
+            if (dimension == null) {
+                continue
+            }
+            if (!dimension.available() && dimension.numerator > 0L) {
+                unavailablePositive = true
+            }
+            int rank = rankFor(dimension)
+            if (rank > selectedRank) {
+                selectedRank = rank
+            }
+            if (dimension.available() && dimension.percent().compareTo(result.maxPercent) > 0) {
+                result.maxPercent = dimension.percent()
+            }
+            result.partial = result.partial || dimension.partial
+        }
+
+        result.partial = result.partial || incomplete || unavailablePositive
+        if (selectedRank > 0) {
+            result.applyRank(selectedRank)
+            for (ImpactDimension dimension : safe) {
+                if (rankFor(dimension) == selectedRank) {
+                    result.reasons.add(dimension.reason())
+                }
+            }
+            return result
+        }
+        if (result.partial) {
+            result.level = "REVIEW_REQUIRED"
+            result.label = "Review required"
+            result.rank = 2
+            result.reasons.add("The measurable footprint is incomplete; zero impact is not established.")
+            return result
+        }
+        result.level = "NO_DETECTABLE_FOOTPRINT"
+        result.label = "No detectable footprint"
+        result.rank = 0
+        result.reasons.add("Every available instance-relative usage dimension is zero.")
+        return result
+    }
+}
+
+class ImpactDimension {
+    String key
+    String label
+    long numerator
+    Long denominator
+    boolean partial
+
+    ImpactDimension(String key, String label, long numerator, Long denominator, boolean partial) {
+        this.key = key
+        this.label = label
+        this.numerator = numerator
+        this.denominator = denominator
+        this.partial = partial
+    }
+
+    boolean available() {
+        return denominator != null && denominator.longValue() > 0L
+    }
+
+    BigDecimal percent() {
+        if (!available() || numerator <= 0L) {
+            return BigDecimal.ZERO.setScale(6)
+        }
+        BigDecimal value = BigDecimal.valueOf(numerator)
+            .multiply(BigDecimal.valueOf(100L))
+            .divide(BigDecimal.valueOf(denominator.longValue()), 6, java.math.RoundingMode.HALF_UP)
+        BigDecimal ceiling = BigDecimal.valueOf(100L).setScale(6)
+        return value.compareTo(ceiling) > 0 ? ceiling : value
+    }
+
+    String reason() {
+        StringBuilder out = new StringBuilder()
+        out.append(label).append(": ").append(numerator).append(" of ")
+            .append(denominator).append(" (").append(percent().setScale(2)).append("%).")
+        if (partial) {
+            out.append(" This is a lower bound.")
+        }
+        return out.toString()
+    }
+
+    Map<String, Object> asMap() {
+        return [
+            key: key,
+            label: label,
+            numerator: numerator,
+            denominator: denominator,
+            available: available(),
+            percent: available() ? percent() : null,
+            partial: partial
+        ] as LinkedHashMap
+    }
+}
+
+class ImpactAssessment {
+    String level
+    String label
+    int rank
+    boolean partial
+    BigDecimal maxPercent = BigDecimal.ZERO.setScale(6)
+    List<String> reasons = new ArrayList<String>()
+    List<ImpactDimension> dimensions = new ArrayList<ImpactDimension>()
+
+    void applyRank(int selectedRank) {
+        rank = selectedRank
+        if (selectedRank == 7) {
+            level = "CRITICAL"
+            label = "Critical"
+        } else if (selectedRank == 6) {
+            level = "HIGH"
+            label = "High"
+        } else if (selectedRank == 5) {
+            level = "MEDIUM"
+            label = "Medium"
+        } else {
+            level = "LOW"
+            label = "Low"
+        }
+    }
+
+    Map<String, Object> asMap() {
+        List<Map<String, Object>> dimensionMaps = new ArrayList<Map<String, Object>>()
+        for (ImpactDimension dimension : dimensions) {
+            if (dimension != null) {
+                dimensionMaps.add(dimension.asMap())
+            }
+        }
+        return [
+            level: level,
+            label: label,
+            rank: rank,
+            partial: partial,
+            maxPercent: maxPercent,
+            reasons: reasons,
+            dimensions: dimensionMaps
+        ] as LinkedHashMap
+    }
+}
+
 class AppFootprint {
 
     String displayName

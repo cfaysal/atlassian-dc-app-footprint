@@ -490,6 +490,67 @@ reach.finish()
 check("impact projects without count map", reach.impactedProjectKeys.size(), 4)
 check("impact issues null without count map", reach.impactedIssues, null)
 
+/* ---- 14. instance-relative impact policy -------------------------------- */
+
+List<List<Object>> impactBoundaryCases = [
+    [0L, 10000L, "NO_DETECTABLE_FOOTPRINT", 0],
+    [1L, 10000L, "LOW", 4],
+    [499L, 10000L, "LOW", 4],
+    [500L, 10000L, "MEDIUM", 5],
+    [1999L, 10000L, "MEDIUM", 5],
+    [2000L, 10000L, "HIGH", 6],
+    [4999L, 10000L, "HIGH", 6],
+    [5000L, 10000L, "CRITICAL", 7],
+    [25000L, 10000L, "CRITICAL", 7]
+]
+for (List<Object> row : impactBoundaryCases) {
+    ImpactDimension dimension = new ImpactDimension(
+        "workItems", "Work item reach",
+        (Long) row.get(0), (Long) row.get(1), false)
+    ImpactAssessment policyResult = ImpactPolicy.assess([dimension], false)
+    check("relative impact level " + row.get(0) + "/" + row.get(1),
+        policyResult.level, row.get(2))
+    check("relative impact rank " + row.get(0) + "/" + row.get(1),
+        policyResult.rank, row.get(3))
+}
+
+ImpactAssessment cappedImpact = ImpactPolicy.assess([
+    new ImpactDimension("associations", "Association density", 250L, 100L, false)
+], false)
+check("relative impact percentage is capped", cappedImpact.maxPercent.toPlainString(), "100.000000")
+
+ImpactAssessment maxImpact = ImpactPolicy.assess([
+    new ImpactDimension("workItems", "Work item reach", 1L, 100L, false),
+    new ImpactDimension("spaces", "Space reach", 6L, 10L, false)
+], false)
+check("highest relative dimension wins", maxImpact.level, "CRITICAL")
+check("highest relative dimension is named", maxImpact.reasons.size(), 1)
+ok("highest relative reason names spaces", maxImpact.reasons.get(0).contains("Space reach"))
+
+ImpactAssessment lowerBoundImpact = ImpactPolicy.assess([
+    new ImpactDimension("workItems", "Work item reach", 25L, 100L, true)
+], false)
+check("partial positive evidence can promote", lowerBoundImpact.level, "HIGH")
+ok("partial positive assessment remains partial", lowerBoundImpact.partial)
+ok("partial reason is marked lower bound", lowerBoundImpact.reasons.get(0).contains("lower bound"))
+
+ImpactAssessment missingDenominatorImpact = ImpactPolicy.assess([
+    new ImpactDimension("workItems", "Work item reach", 5L, null, false)
+], false)
+check("positive value without denominator requires review",
+    missingDenominatorImpact.level, "REVIEW_REQUIRED")
+
+ImpactAssessment incompleteZeroImpact = ImpactPolicy.assess([
+    new ImpactDimension("workItems", "Work item reach", 0L, 100L, false)
+], true)
+check("incomplete zero requires review", incompleteZeroImpact.level, "REVIEW_REQUIRED")
+
+Map<String, Object> relativeImpactMap = maxImpact.asMap()
+check("impact map exposes maximum percentage",
+    ((BigDecimal) relativeImpactMap.get("maxPercent")).toPlainString(), "60.000000")
+check("impact map exposes dimension evidence",
+    ((List<Map<String, Object>>) relativeImpactMap.get("dimensions")).size(), 2)
+
 /* ---- N. space key validation (OP-950 Q1) --------------------------------- */
 
 /* The defect this replaces: the space key ran through cqlTerm(), which strips
