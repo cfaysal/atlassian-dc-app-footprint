@@ -24,7 +24,7 @@
  *   level=app|macro|module      default app (CSV only)
  *   includeSystem=true|false    default false
  *   includeDisabled=true|false  default true
- *   includeArchived=true|false  default true
+ *   includeArchived=true|false  default false
  *   includeModules=true|false   default false (HTML/JSON detail)
  *   scanUsage=true|false        default true
  *   scanAliases=true|false      default false
@@ -727,7 +727,7 @@ class MacroFootprint {
         return result
     }
 
-    Map<String, Object> asMap() {
+    Map<String, Object> asMap(boolean includeArchived = false) {
         return [
             source: source,
             macroName: macroName,
@@ -749,11 +749,12 @@ class MacroFootprint {
                 contentTypes: getCurrentContentTypeCounts()
             ] as LinkedHashMap,
             archived: [
-                used: isArchivedUsed(),
-                contentCount: getArchivedContentCount(),
-                spaceCount: getArchivedSpaceCount(),
-                spaceKeys: new ArrayList<String>(archivedSpaceKeys),
-                contentTypes: getArchivedContentTypeCounts()
+                state: includeArchived ? usageState : Cfp.DISABLED,
+                used: includeArchived ? isArchivedUsed() : null,
+                contentCount: includeArchived ? getArchivedContentCount() : null,
+                spaceCount: includeArchived ? getArchivedSpaceCount() : null,
+                spaceKeys: includeArchived ? new ArrayList<String>(archivedSpaceKeys) : null,
+                contentTypes: includeArchived ? getArchivedContentTypeCounts() : null
             ] as LinkedHashMap,
             otherContentCount: getOtherContentCount(),
             totalContentCount: getTotalContentCount(),
@@ -949,10 +950,11 @@ class AppFootprint {
         return result
     }
 
-    Map<String, Object> asMap(boolean includeModules, ImpactAssessment impact) {
+    Map<String, Object> asMap(boolean includeModules, ImpactAssessment impact,
+                              boolean includeArchived = false) {
         List<Map<String, Object>> macroMaps = new ArrayList<Map<String, Object>>()
         for (MacroFootprint macro : macros) {
-            macroMaps.add(macro.asMap())
+            macroMaps.add(macro.asMap(includeArchived))
         }
 
         List<Map<String, Object>> persistenceMaps = new ArrayList<Map<String, Object>>()
@@ -992,12 +994,14 @@ class AppFootprint {
                 affectedSpaces: currentSpaceCount
             ] as LinkedHashMap,
             archivedFootprint: [
-                detected: hasArchivedFootprint(),
-                partial: archivedUsagePartial,
-                usedMacros: archivedUsedMacroCount,
-                uniqueContent: archivedUniqueContentCount,
-                macroContentAssociations: archivedAssociations,
-                affectedSpaces: archivedSpaceCount
+                state: includeArchived ?
+                    (archivedUsagePartial ? Cfp.PARTIAL : Cfp.MEASURED) : Cfp.DISABLED,
+                detected: includeArchived ? hasArchivedFootprint() : null,
+                partial: includeArchived ? archivedUsagePartial : null,
+                usedMacros: includeArchived ? archivedUsedMacroCount : null,
+                uniqueContent: includeArchived ? archivedUniqueContentCount : null,
+                macroContentAssociations: includeArchived ? archivedAssociations : null,
+                affectedSpaces: includeArchived ? archivedSpaceCount : null
             ] as LinkedHashMap,
             otherUniqueContent: otherUniqueContentCount,
             otherMacroContentAssociations: otherAssociations,
@@ -2182,7 +2186,7 @@ appFootprint(
     String appKeyFilter = Cfp.stringParam(queryParams, "appKey", "")
     boolean includeSystem = Cfp.booleanParam(queryParams, "includeSystem", false)
     boolean includeDisabled = Cfp.booleanParam(queryParams, "includeDisabled", true)
-    boolean includeArchived = Cfp.booleanParam(queryParams, "includeArchived", true)
+    boolean includeArchived = Cfp.booleanParam(queryParams, "includeArchived", false)
     boolean includeModules = Cfp.booleanParam(queryParams, "includeModules", false)
     boolean scanUsage = Cfp.booleanParam(queryParams, "scanUsage", true)
     boolean scanAliases = Cfp.booleanParam(queryParams, "scanAliases", false)
@@ -2198,7 +2202,7 @@ appFootprint(
         appKey: appKeyFilter.isEmpty() ? null : appKeyFilter,
         includeSystem: includeSystem ? "true" : null,
         includeDisabled: includeDisabled ? null : "false",
-        includeArchived: includeArchived ? null : "false",
+        includeArchived: includeArchived ? "true" : null,
         includeModules: includeModules ? "true" : null,
         scanUsage: scanUsage ? null : "false",
         scanAliases: scanAliases ? "true" : null,
@@ -2254,7 +2258,7 @@ appFootprint(
     Set<String> currentSpaceKeys = new HashSet<String>()
     Set<String> archivedSpaceKeys = new HashSet<String>()
     boolean currentSpaceInventoryComplete = true
-    boolean archivedSpaceInventoryComplete = true
+    boolean archivedSpaceInventoryComplete = includeArchived
 
     try {
         currentSpaceKeys.addAll(spaceManager.getAllSpaceKeys(SpaceStatus.CURRENT))
@@ -2263,11 +2267,13 @@ appFootprint(
         Cfp.note(globalDiagnostics, "current space inventory", error)
     }
 
-    try {
-        archivedSpaceKeys.addAll(spaceManager.getAllSpaceKeys(SpaceStatus.ARCHIVED))
-    } catch (Exception error) {
-        archivedSpaceInventoryComplete = false
-        Cfp.note(globalDiagnostics, "archived space inventory", error)
+    if (includeArchived) {
+        try {
+            archivedSpaceKeys.addAll(spaceManager.getAllSpaceKeys(SpaceStatus.ARCHIVED))
+        } catch (Exception error) {
+            archivedSpaceInventoryComplete = false
+            Cfp.note(globalDiagnostics, "archived space inventory", error)
+        }
     }
 
     Long currentContentTotal = null
@@ -2763,6 +2769,9 @@ appFootprint(
         appKey: appKeyFilter,
         numbers: numbers
     ] as LinkedHashMap
+    boolean archiveUsageEnabled = includeArchived && scanUsage
+    String archiveUsageState = archiveUsageEnabled ?
+        (archivedTotalsPartial ? Cfp.PARTIAL : Cfp.MEASURED) : Cfp.DISABLED
 
     /* =========================================================================
      * JSON
@@ -2771,12 +2780,12 @@ appFootprint(
     if (format == "json") {
         List<Map<String, Object>> appMaps = new ArrayList<Map<String, Object>>()
         for (AppFootprint app : apps) {
-            appMaps.add(app.asMap(includeModules, impacts.get(app.pluginKey)))
+            appMaps.add(app.asMap(includeModules, impacts.get(app.pluginKey), archiveUsageEnabled))
         }
 
         List<Map<String, Object>> userMacroMaps = new ArrayList<Map<String, Object>>()
         for (MacroFootprint macro : userMacros) {
-            userMacroMaps.add(macro.asMap())
+            userMacroMaps.add(macro.asMap(archiveUsageEnabled))
         }
 
         Map<String, Object> response = [
@@ -2788,14 +2797,16 @@ appFootprint(
             options: optionsInfo,
             spaceStatus: [
                 currentSpaces: currentSpaceKeys.size(),
-                archivedSpaces: archivedSpaceKeys.size()
+                archivedSpaces: includeArchived ? archivedSpaceKeys.size() : null,
+                archivedState: includeArchived ?
+                    (archivedSpaceInventoryComplete ? Cfp.MEASURED : Cfp.ERROR) : Cfp.DISABLED
             ] as LinkedHashMap,
             summary: [
                 apps: apps.size(),
                 disabledApps: disabledApps,
                 decommissionCandidates: decommissionCandidates.size(),
                 appsWithCurrentFootprint: appsWithCurrentFootprint,
-                appsWithArchivedFootprint: appsWithArchivedFootprint,
+                appsWithArchivedFootprint: archiveUsageEnabled ? appsWithArchivedFootprint : null,
                 impact: [
                     critical: criticalApps,
                     high: highApps,
@@ -2821,19 +2832,21 @@ appFootprint(
                     affectedSpaces: globalCurrentSpaces.size()
                 ] as LinkedHashMap,
                 archived: [
-                    usedAppMacros: totalArchivedUsedMacros,
-                    uniqueContent: globalArchivedContentIds.size(),
-                    macroContentAssociations: totalArchivedAssociations,
-                    partial: archivedTotalsPartial,
-                    affectedSpaces: globalArchivedSpaces.size()
+                    state: archiveUsageState,
+                    usedAppMacros: archiveUsageEnabled ? totalArchivedUsedMacros : null,
+                    uniqueContent: archiveUsageEnabled ? globalArchivedContentIds.size() : null,
+                    macroContentAssociations: archiveUsageEnabled ? totalArchivedAssociations : null,
+                    partial: archiveUsageEnabled ? archivedTotalsPartial : null,
+                    affectedSpaces: archiveUsageEnabled ? globalArchivedSpaces.size() : null
                 ] as LinkedHashMap,
                 nativeUserMacros: [
                     defined: userMacros.size(),
                     currentUsed: currentUsedUserMacros,
-                    archivedUsed: archivedUsedUserMacros,
+                    archivedState: archiveUsageState,
+                    archivedUsed: archiveUsageEnabled ? archivedUsedUserMacros : null,
                     currentAssociations: currentUserMacroAssociations,
-                    archivedAssociations: archivedUserMacroAssociations,
-                    partial: userMacroTotalsPartial
+                    archivedAssociations: archiveUsageEnabled ? archivedUserMacroAssociations : null,
+                    partial: archiveUsageEnabled ? userMacroTotalsPartial : null
                 ] as LinkedHashMap,
                 macrosSkippedByBudget: macrosSkippedByBudget,
                 diagnostics: totalDiagnostics,
@@ -2862,7 +2875,7 @@ appFootprint(
         StringBuilder csv = new StringBuilder()
 
         if (csvLevel == "macro") {
-            csv.append("source,app,vendor,pluginKey,macro,displayName,moduleEnabled,usageState,currentContent,currentSpaces,archivedContent,archivedSpaces,otherContent,totalContent,aliases,diagnostics\n")
+            csv.append("source,app,vendor,pluginKey,macro,displayName,moduleEnabled,usageState,currentContent,currentSpaces,archivedContent,archivedSpaces,archivedState,otherContent,totalContent,aliases,diagnostics\n")
 
             for (AppFootprint app : apps) {
                 for (MacroFootprint macro : app.macros) {
@@ -2876,8 +2889,9 @@ appFootprint(
                     csv.append(Cfp.csv(macro.usageState)).append(",")
                     csv.append(macro.getCurrentContentCount()).append(",")
                     csv.append(macro.getCurrentSpaceCount()).append(",")
-                    csv.append(macro.getArchivedContentCount()).append(",")
-                    csv.append(macro.getArchivedSpaceCount()).append(",")
+                    csv.append(archiveUsageEnabled ? macro.getArchivedContentCount() : "").append(",")
+                    csv.append(archiveUsageEnabled ? macro.getArchivedSpaceCount() : "").append(",")
+                    csv.append(Cfp.csv(archiveUsageEnabled ? macro.usageState : Cfp.DISABLED)).append(",")
                     csv.append(macro.getOtherContentCount()).append(",")
                     csv.append(macro.getTotalContentCount()).append(",")
                     csv.append(Cfp.csv(String.join(";", macro.aliases))).append(",")
@@ -2896,8 +2910,9 @@ appFootprint(
                 csv.append(Cfp.csv(macro.usageState)).append(",")
                 csv.append(macro.getCurrentContentCount()).append(",")
                 csv.append(macro.getCurrentSpaceCount()).append(",")
-                csv.append(macro.getArchivedContentCount()).append(",")
-                csv.append(macro.getArchivedSpaceCount()).append(",")
+                csv.append(archiveUsageEnabled ? macro.getArchivedContentCount() : "").append(",")
+                csv.append(archiveUsageEnabled ? macro.getArchivedSpaceCount() : "").append(",")
+                csv.append(Cfp.csv(archiveUsageEnabled ? macro.usageState : Cfp.DISABLED)).append(",")
                 csv.append(macro.getOtherContentCount()).append(",")
                 csv.append(macro.getTotalContentCount()).append(",")
                 csv.append(Cfp.csv("")).append(",")
@@ -2939,10 +2954,12 @@ appFootprint(
                 .build()
         }
 
-        csv.append("pluginKey,displayName,vendor,version,enabled,state,systemProvided,impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions,enabledModules,providedMacros,enabledMacros,blueprints,templates,customContentModules,currentUsedMacros,currentUniqueContent,currentAssociations,currentSpaces,currentComplete,archivedUsedMacros,archivedUniqueContent,archivedAssociations,archivedSpaces,archivedComplete,diagnostics\n")
+        csv.append("pluginKey,displayName,vendor,version,enabled,state,systemProvided,impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions,enabledModules,providedMacros,enabledMacros,blueprints,templates,customContentModules,currentUsedMacros,currentUniqueContent,currentAssociations,currentSpaces,currentComplete,archivedUsedMacros,archivedUniqueContent,archivedAssociations,archivedSpaces,archivedComplete,archivedState,diagnostics\n")
 
         for (AppFootprint app : apps) {
             ImpactAssessment impact = impacts.get(app.pluginKey)
+            String appArchiveUsageState = archiveUsageEnabled ?
+                (app.archivedUsagePartial ? Cfp.PARTIAL : Cfp.MEASURED) : Cfp.DISABLED
             csv.append(Cfp.csv(app.pluginKey)).append(",")
             csv.append(Cfp.csv(app.displayName)).append(",")
             csv.append(Cfp.csv(app.vendor)).append(",")
@@ -2966,11 +2983,12 @@ appFootprint(
             csv.append(app.currentAssociations).append(",")
             csv.append(app.currentSpaceCount).append(",")
             csv.append(!app.currentUsagePartial).append(",")
-            csv.append(app.archivedUsedMacroCount).append(",")
-            csv.append(app.archivedUniqueContentCount).append(",")
-            csv.append(app.archivedAssociations).append(",")
-            csv.append(app.archivedSpaceCount).append(",")
-            csv.append(!app.archivedUsagePartial).append(",")
+            csv.append(archiveUsageEnabled ? app.archivedUsedMacroCount : "").append(",")
+            csv.append(archiveUsageEnabled ? app.archivedUniqueContentCount : "").append(",")
+            csv.append(archiveUsageEnabled ? app.archivedAssociations : "").append(",")
+            csv.append(archiveUsageEnabled ? app.archivedSpaceCount : "").append(",")
+            csv.append(archiveUsageEnabled ? !app.archivedUsagePartial : "").append(",")
+            csv.append(Cfp.csv(appArchiveUsageState)).append(",")
             csv.append(app.diagnosticCount).append("\n")
         }
 
@@ -3008,7 +3026,7 @@ appFootprint(
     String linkCsvModules = Cfp.html(Cfp.link(activeParams, csvModulesOverrides))
 
     Map<String, Object> archivedOverrides = new LinkedHashMap<String, Object>()
-    archivedOverrides.put("includeArchived", includeArchived ? "false" : null)
+    archivedOverrides.put("includeArchived", includeArchived ? null : "true")
     String linkArchived = Cfp.html(Cfp.link(activeParams, archivedOverrides))
 
     Map<String, Object> modulesOverrides = new LinkedHashMap<String, Object>()
@@ -3063,7 +3081,8 @@ appFootprint(
         row.put("currentContent", Integer.valueOf(app.currentUniqueContentCount))
         row.put("currentSpaces", Integer.valueOf(app.currentSpaceCount))
         row.put("archivedState", PageExport.usageState(app, scanUsage, includeArchived))
-        row.put("archivedContent", Integer.valueOf(app.archivedUniqueContentCount))
+        row.put("archivedContent", archiveUsageEnabled ?
+            Integer.valueOf(app.archivedUniqueContentCount) : null)
         row.put("diagnostics", Integer.valueOf(app.diagnosticCount))
         row.put("observations", Integer.valueOf(app.observationCount))
         exportApps.add(row)
@@ -3194,7 +3213,7 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
     <div class="subtitle">
       Generated ${esc(generatedAt)} &nbsp;&middot;&nbsp;
       Current spaces ${num(currentSpaceKeys.size())} &nbsp;&middot;&nbsp;
-      Archived spaces ${num(archivedSpaceKeys.size())}
+      ${includeArchived ? num(archivedSpaceKeys.size()) + ' archived spaces' : 'archived spaces off'}
     </div>
   </div>
   <div class="actions">

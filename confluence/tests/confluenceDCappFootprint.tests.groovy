@@ -254,6 +254,13 @@ mapped.currentContentIds.add("c1")
 Map<String, Object> macroMap = mapped.asMap()
 check("macro asMap keeps the state", macroMap.get("usageState"), Cfp.BUDGET)
 check("macro asMap does not claim usage", ((Map<String, Object>) macroMap.get("current")).get("used"), false)
+Map<String, Object> macroArchivedOff = (Map<String, Object>) macroMap.get("archived")
+check("macro asMap marks archive measurement disabled by default",
+    macroArchivedOff.get("state"), Cfp.DISABLED)
+check("macro asMap masks unmeasured archived content",
+    macroArchivedOff.get("contentCount"), null)
+check("macro asMap masks unmeasured archived spaces",
+    macroArchivedOff.get("spaceCount"), null)
 
 
 /* ---- 9. app aggregation --------------------------------------------------- */
@@ -344,6 +351,16 @@ check("asMap current partial flag",
 check("asMap current associations",
     ((Map<String, Object>) appMap.get("currentFootprint")).get("macroContentAssociations"), 4L)
 check("asMap macro list", ((List<Object>) appMap.get("macros")).size(), 3)
+Map<String, Object> archivedAppMap = (Map<String, Object>) appMap.get("archivedFootprint")
+check("app asMap marks archive measurement disabled by default",
+    archivedAppMap.get("state"), Cfp.DISABLED)
+check("app asMap masks unmeasured archived content",
+    archivedAppMap.get("uniqueContent"), null)
+check("app asMap masks unmeasured archived associations",
+    archivedAppMap.get("macroContentAssociations"), null)
+Map<String, Object> archiveEnabledAppMap = app.asMap(false, impact, true)
+check("app asMap exposes measured archived content after opt-in",
+    ((Map<String, Object>) archiveEnabledAppMap.get("archivedFootprint")).get("uniqueContent"), 1)
 
 /* one unmeasured macro makes both dimensions partial, and never a footprint */
 AppFootprint partialApp = new AppFootprint()
@@ -1581,6 +1598,26 @@ ok("Confluence decommission candidates use the shared guarded predicate",
     endpointText.contains("ImpactPolicy.isDecommissionCandidate(app.systemProvided, impact)"))
 ok("Confluence system metadata failures remain unknown",
     endpointText.contains("app.systemProvided = null"))
+ok("Confluence includeArchived defaults to false",
+    endpointText.contains('Cfp.booleanParam(queryParams, "includeArchived", false)'))
+ok("Confluence Archived button loads archive evidence on demand",
+    endpointText.contains('archivedOverrides.put("includeArchived", includeArchived ? null : "true")'))
+ok("Confluence preserves the archive opt-in across other report links",
+    endpointText.contains('includeArchived: includeArchived ? "true" : null'))
+ok("Confluence only inventories archived spaces after archive opt-in",
+    (endpointText =~ /if \(includeArchived\) \{\s*try \{\s*archivedSpaceKeys\.addAll\(spaceManager\.getAllSpaceKeys\(SpaceStatus\.ARCHIVED\)\)/).find())
+ok("Confluence reports archive inventory as off until requested",
+    endpointText.contains("includeArchived ? num(archivedSpaceKeys.size()) + ' archived spaces' : 'archived spaces off'") &&
+    endpointText.contains("archivedSpaces: includeArchived ? archivedSpaceKeys.size() : null"))
+ok("Confluence JSON summary masks archive usage until requested",
+    endpointText.contains("usedAppMacros: archiveUsageEnabled ? totalArchivedUsedMacros : null") &&
+    endpointText.contains("archivedUsed: archiveUsageEnabled ? archivedUsedUserMacros : null"))
+ok("Confluence Macro CSV masks archived counters and exports archive state",
+    endpointText.contains("archivedContent,archivedSpaces,archivedState") &&
+    !endpointText.contains("csv.append(macro.getArchivedContentCount()).append(\",\")"))
+ok("Confluence App CSV masks archived counters and exports archive state",
+    endpointText.contains("archivedSpaces,archivedComplete,archivedState,diagnostics") &&
+    !endpointText.contains("csv.append(app.archivedUsedMacroCount).append(\",\")"))
 ok("Confluence renders a decommission-candidate notice",
     endpointText.contains("Decommission candidates ("))
 ok("Confluence JSON summary exports the candidate count",

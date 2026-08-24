@@ -114,10 +114,10 @@ All parameters are optional and are appended as query parameters.
 | `includeDisabled` | `true`, `false` | `true` | Include installed but disabled apps. |
 | `includeDrafts` | `true`, `false` | `false` | Include draft workflows in the scan. |
 | `includeModules` | `true`, `false` | `false` | Emit the full module list per app. |
-| `includeArchived` | `true`, `false` | `true` | Measure archived Spaces and Work Items separately from current impact. |
-| `includeReach` | `true`, `false` | `true` | Measure the Spaces and Work Items reached through workflows and screens. |
-| `issueCounts` | `true`, `false` | `true` | Count Work Items per app-provided custom field. |
-| `issueBudgetMs` | milliseconds | `120000` | Time budget for Work Item counting, including the archived value split. `0` means unlimited. Fields beyond the budget are reported as NOT MEASURED, never as zero. |
+| `includeArchived` | `true`, `false` | `false` | Measure archived Projects and Issues separately from current impact. The Archived button enables this on demand. |
+| `includeReach` | `true`, `false` | `true` | Measure the Projects and Issues reached through workflows and screens. |
+| `issueCounts` | `true`, `false` | `true` | Count Issues per app-provided custom field. |
+| `issueBudgetMs` | milliseconds | `120000` | Time budget for Issue counting, including the archived value split. `0` means unlimited. Fields beyond the budget are reported as NOT MEASURED, never as zero. |
 | `numbers` | `de`, `en` | `de` | Thousands separator style. |
 
 ### Confluence
@@ -128,7 +128,7 @@ All parameters are optional and are appended as query parameters.
 | `level` | `app`, `macro`, `module` | `app` | CSV granularity. CSV only. |
 | `includeSystem` | `true`, `false` | `false` | Include system-provided apps. |
 | `includeDisabled` | `true`, `false` | `true` | Include installed but disabled apps. |
-| `includeArchived` | `true`, `false` | `true` | Include archived spaces as a separate dimension. |
+| `includeArchived` | `true`, `false` | `false` | Include archived spaces as a separate dimension. The Archived button enables this on demand. |
 | `includeModules` | `true`, `false` | `false` | Emit module detail in HTML and JSON. |
 | `scanUsage` | `true`, `false` | `true` | Measure actual macro usage, not just declared macros. |
 | `scanAliases` | `true`, `false` | `false` | Also resolve macro aliases. |
@@ -187,11 +187,11 @@ were carried over.
 Read this before quoting a number to a customer.
 
 **Jira** measures configuration reach: extension modules per app, app-provided custom
-fields and the number of Work Items carrying a value in them, screen and screen-scheme
+fields and the number of Issues carrying a value in them, screen and screen-scheme
 placements, and workflow references including post-functions, conditions and validators.
-Active and archived Spaces and Work Items are measured separately. Archived-only evidence
+Active and archived Projects and Issues are measured separately. Archived-only evidence
 is `LEGACY_ONLY`, while an omitted or incomplete archive split is `REVIEW_REQUIRED` for an
-otherwise empty current footprint. Work Item counting is the expensive part and is the
+otherwise empty current footprint. Issue counting is the expensive part and is the
 reason `issueBudgetMs` exists.
 
 **Confluence** measures content reach: extension modules per app, and actual macro usage
@@ -220,9 +220,9 @@ highest resulting share determines the app's level:
 | at least 5% | Medium |
 | greater than 0% | Low |
 
-Jira evaluates active Work Item-field associations and reached Work Items against all
-active Work Items, reached active Spaces against all active Spaces, app-owned custom fields
-against all custom fields, and referenced workflows reaching active Spaces against the
+Jira evaluates active Issue-field associations and reached Issues against all
+active Issues, reached active Projects against all active Projects, app-owned custom fields
+against all custom fields, and referenced workflows reaching active Projects against the
 instance-wide active workflow reach. Confluence evaluates
 current unique content and current macro associations against all current pages and blog
 posts, plus current Space reach against all current Spaces. Archived evidence in both

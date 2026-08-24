@@ -8,7 +8,7 @@ system-provided, and classified from complete evidence as
 `NO_DETECTABLE_FOOTPRINT`. The list is a review starting point, never an uninstall
 recommendation.
 
-Jira additionally separates active and archived Space and Work Item evidence so
+Jira additionally separates active and archived Project and Issue evidence so
 archived-only dependencies are visible as `LEGACY_ONLY` instead of being mixed into
 current impact or hidden behind a candidate label.
 
@@ -30,26 +30,27 @@ carry the candidate count in both products.
 
 ## Jira archive model
 
-Jira gains `includeArchived`, defaulting to `true` like Confluence. The HTML control,
+Jira and Confluence expose `includeArchived` as an opt-in measurement, defaulting to
+`false`. The HTML Archived control reloads the report with `includeArchived=true`;
 JSON options, CSV evidence, and page export all expose the selected value.
 
 The project inventory is split with the public Jira APIs:
 
-- `ProjectManager.getProjectObjects()` supplies active Spaces.
-- `ProjectManager.getArchivedProjects()` supplies archived Spaces.
+- `ProjectManager.getProjectObjects()` supplies active Projects.
+- `ProjectManager.getArchivedProjects()` supplies archived Projects.
 
 Workflow and screen reach project keys are partitioned against those two complete
 inventories. Unknown project keys make that reach partial; they are not silently
 assigned to either side.
 
-Work Item totals are split by counting each archived Space with
+Issue totals are split by counting each archived Project with
 `IssueManager.getIssueCountForProject(projectId)` and subtracting the complete
 archived total from `IssueManager.getIssueCount()`. A negative or incomplete split
-is invalid and makes the Work Item denominator unavailable.
+is invalid and makes the Issue denominator unavailable.
 
 For app-owned custom-field values, total associations continue to come from
 `CustomField.getIssuesWithValue()`. When archived evidence is requested, archived
-issue IDs are streamed per archived Space with
+issue IDs are streamed per archived Project with
 `IssueManager.getIssueIdsForProject(projectId)`, loaded in bounded batches, and
 tested with `CustomField.getValue(issue)`. The existing `issueBudgetMs` bounds this
 work. A stopped or failed scan marks the active/archive association split
@@ -59,17 +60,17 @@ incomplete and prevents a zero-impact conclusion.
 
 Current impact uses only active evidence:
 
-- active Work Item associations divided by active Work Items;
-- active reached Work Items divided by active Work Items;
-- reached active Spaces divided by all active Spaces;
+- active Issue associations divided by active Issues;
+- active reached Issues divided by active Issues;
+- reached active Projects divided by all active Projects;
 - app custom-field share divided by all custom fields;
-- referenced workflows reaching active Spaces divided by all workflows reaching
-  active Spaces.
+- referenced workflows reaching active Projects divided by all workflows reaching
+  active Projects.
 
 After current impact is measured:
 
 1. A positive current dimension keeps its relative Critical/High/Medium/Low level.
-2. A complete current zero with positive archived reach or archived Work Item
+2. A complete current zero with positive archived reach or archived Issue
    evidence becomes `LEGACY_ONLY`.
 3. An incomplete active/archive split becomes `REVIEW_REQUIRED`.
 4. Only a complete zero across both current and archived evidence becomes

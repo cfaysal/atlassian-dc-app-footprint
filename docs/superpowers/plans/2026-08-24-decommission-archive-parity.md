@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox acceptance so progress can be resumed without guessing.
 
-**Goal:** Give Jira and Confluence the same guarded decommission-candidate contract, and make Jira impact classification distinguish active from archived Space and Work Item evidence.
+**Goal:** Give Jira and Confluence the same guarded decommission-candidate contract, and make Jira impact classification distinguish active from archived Project and Issue evidence.
 
 **Architecture:** Keep both files deployable as standalone ScriptRunner Groovy endpoints. Product-independent policy and partitioning logic stays in the existing helper-class cut so the offline suites exercise the shipped source; Jira/Confluence APIs remain below the cut and feed explicit measured/partial states into that policy. Archive reads are bounded by the existing Jira issue budget and fail closed to `REVIEW_REQUIRED`.
 
@@ -46,9 +46,9 @@
 - Modify: `jira/jiraDCappFootprint.groovy`
 
 - [ ] Add RED unit tests for partitioning known project keys into active and archived sets, flagging unknown keys as partial, and preserving distinct active/archive counts in maps.
-- [ ] Extend `WorkflowReference` with active/archive project keys, Work Item counts, and reach states while retaining aggregate compatibility fields where the UI still needs them.
+- [ ] Extend `WorkflowReference` with active/archive project keys, Issue counts, and reach states while retaining aggregate compatibility fields where the UI still needs them.
 - [ ] Extend `CustomFieldFootprint` with active/archive association values and explicit split state.
-- [ ] Extend `AppFootprint.finish()` to aggregate active and archived reach independently without double-counting a Space or Work Item.
+- [ ] Extend `AppFootprint.finish()` to aggregate active and archived reach independently without double-counting a Project or Issue.
 - [ ] Add a small product-independent partition helper to the offline cut; unknown keys must set partial rather than disappear.
 - [ ] Re-run the Jira suite and record GREEN for the pure model.
 
@@ -59,9 +59,9 @@
 - Modify: `jira/tests/jiraDCappFootprint.tests.groovy`
 - Modify: `jira/jiraDCappFootprint.groovy`
 
-- [ ] Add RED source-contract tests for `includeArchived` defaulting to true, active inventory via `getProjectObjects()`, archive inventory via `getArchivedProjects()`, per-archive Work Item counts, bounded issue-ID batches, and fail-closed state propagation.
-- [ ] Read active and archived Space inventories separately and expose complete inventory-key sets.
-- [ ] Compute archived Work Items from `getIssueCountForProject(projectId)` and active Work Items as global minus archived; reject failed, missing, or negative splits.
+- [ ] Add RED source-contract tests for `includeArchived` defaulting to false and loading on demand, active inventory via `getProjectObjects()`, archive inventory via `getArchivedProjects()`, per-archive Issue counts, bounded issue-ID batches, and fail-closed state propagation.
+- [ ] Read active and archived Project inventories separately and expose complete inventory-key sets.
+- [ ] Compute archived Issues from `getIssueCountForProject(projectId)` and active Issues as global minus archived; reject failed, missing, or negative splits.
 - [ ] Partition workflow and screen reach keys against the inventories; an unknown key makes that path partial.
 - [ ] When `issueCounts && includeArchived`, scan archived issue IDs in bounded batches using `getIssueIdsForProject`, `getIssueObjects`, and `CustomField.getValue`; stop at `issueBudgetMs` and mark every unfinished split partial.
 - [ ] When archive measurement is disabled or incomplete, retain observed positive evidence but prevent a complete-zero conclusion.

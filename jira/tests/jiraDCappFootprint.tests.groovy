@@ -99,8 +99,8 @@ Map<String, String> categoryCases = [
     "GadgetModuleDescriptor": "Reports / Dashboards",
     "ReportModuleDescriptor": "Reports / Dashboards",
     "ProjectPermissionModuleDescriptor": "Permissions / Security",
-    "ProjectRoleModuleDescriptor": "Space",
-    "IssueOperationModuleDescriptor": "Work Item",
+    "ProjectRoleModuleDescriptor": "Project",
+    "IssueOperationModuleDescriptor": "Issue",
     "ComponentImportModuleDescriptor": "Other",
     "SomethingElse": "Other"
 ]
@@ -531,13 +531,13 @@ check("incomplete active inventory fails the detail state closed",
     Fp.partitionDisplayState(Fp.MEASURED, false), Fp.ERROR)
 check("budgeted reach remains budgeted regardless of inventory",
     Fp.partitionDisplayState(Fp.BUDGET, true), Fp.BUDGET)
-check("disabled Work Item count stays off",
+check("disabled Issue count stays off",
     Fp.countDisplayState(false, Fp.MEASURED, Long.valueOf(0L)), Fp.DISABLED)
-check("measured Work Item count needs a value",
+check("measured Issue count needs a value",
     Fp.countDisplayState(true, Fp.MEASURED, null), Fp.ERROR)
-check("measured Work Item zero remains measured",
+check("measured Issue zero remains measured",
     Fp.countDisplayState(true, Fp.MEASURED, Long.valueOf(0L)), Fp.MEASURED)
-check("budgeted Work Item reach remains not measured",
+check("budgeted Issue reach remains not measured",
     Fp.countDisplayState(true, Fp.BUDGET, null), Fp.BUDGET)
 
 ProjectPartition completePartition = ProjectPartition.split(
@@ -636,11 +636,11 @@ ok("impact reason rounds recurring percentages",
 
 ImpactAssessment maxImpact = ImpactPolicy.assess([
     new ImpactDimension("workItems", "Work item reach", 1L, 100L, false),
-    new ImpactDimension("spaces", "Space reach", 6L, 10L, false)
+    new ImpactDimension("projects", "Project reach", 6L, 10L, false)
 ], false)
 check("highest relative dimension wins", maxImpact.level, "CRITICAL")
 check("highest relative dimension is named", maxImpact.reasons.size(), 1)
-ok("highest relative reason names spaces", maxImpact.reasons.get(0).contains("Space reach"))
+ok("highest relative reason names projects", maxImpact.reasons.get(0).contains("Project reach"))
 
 ImpactAssessment lowerBoundImpact = ImpactPolicy.assess([
     new ImpactDimension("workItems", "Work item reach", 25L, 100L, true)
@@ -687,8 +687,8 @@ ImpactAssessment assessedApp = ImpactAnalyzer.assessJira(
     app, true, false, true, Long.valueOf(1000L), null,
     Long.valueOf(100L), Long.valueOf(10L), false)
 check("Jira highest product dimension wins", assessedApp.level, "MEDIUM")
-ok("Jira product reasons expose Work Item association density",
-    assessedApp.reasons.any { String reason -> reason.contains("Work Item-field association density") })
+ok("Jira product reasons expose Issue association density",
+    assessedApp.reasons.any { String reason -> reason.contains("Issue-field association density") })
 Map<String, Object> assessedAppMap = app.asMap(false, assessedApp)
 Map<String, Object> assessedImpactMap = (Map<String, Object>) assessedAppMap.get("impact")
 check("Jira JSON app map exposes impact level", assessedImpactMap.get("level"), "MEDIUM")
@@ -814,9 +814,9 @@ knownActivePartialReference.activeProjectKeys.add("ACTIVE")
 AppFootprint knownActivePartialApp = new AppFootprint()
 knownActivePartialApp.workflowReferences.add(knownActivePartialReference)
 knownActivePartialApp.finish([ACTIVE: 9L], null)
-check("known active Space survives an incomplete archive partition",
+check("known active Project survives an incomplete archive partition",
     knownActivePartialApp.activeImpactedProjectKeys, ["ACTIVE"])
-check("known active Work Items survive an incomplete archive partition",
+check("known active Issues survive an incomplete archive partition",
     knownActivePartialApp.activeImpactedIssues, Long.valueOf(9L))
 ok("omitted archive remains explicit without degrading known active reach",
     !knownActivePartialApp.activeImpactPartial && knownActivePartialApp.archivedImpactPartial)
@@ -859,42 +859,51 @@ ok("Jira candidate copy describes the selected report population",
     endpointText.contains("Included in this report, not system-provided"))
 ok("Jira candidate copy no longer claims every candidate is enabled",
     !endpointText.contains("Enabled, not system-provided"))
-ok("Jira includeArchived defaults to true",
-    endpointText.contains('Fp.booleanParam(queryParams, "includeArchived", true)'))
-ok("Jira inventories archived Spaces explicitly",
+ok("Jira includeArchived defaults to false",
+    endpointText.contains('Fp.booleanParam(queryParams, "includeArchived", false)'))
+ok("Jira Archived button loads archive evidence on demand",
+    endpointText.contains("[includeArchived: includeArchived ? null : 'true']"))
+ok("Jira preserves the archive opt-in across other report links",
+    endpointText.contains('includeArchived: includeArchived ? "true" : null'))
+ok("Jira inventories archived Projects explicitly",
     endpointText.contains("getArchivedProjects()"))
-ok("Jira counts Work Items per archived Space",
+ok("Jira only inventories archived Projects after archive opt-in",
+    (endpointText =~ /if \(includeArchived\) \{\s*try \{\s*for \(Project archivedProject : projectManager\.getArchivedProjects\(\)\)/).find())
+ok("Jira counts Issues per archived Project",
     endpointText.contains("issueManager.getIssueCountForProject(archivedProject.getId())"))
-ok("Jira streams archived Work Item ids",
+ok("Jira streams archived Issue ids",
     endpointText.contains("issueManager.getIssueIdsForProject(archivedProject.getId())"))
-ok("Jira loads archived Work Items in bounded batches",
+ok("Jira loads archived Issues in bounded batches",
     endpointText.contains("issueManager.getIssueObjects(issueIdBatch)"))
-ok("Jira rejects an incomplete archived Work Item batch",
+ok("Jira rejects an incomplete archived Issue batch",
     endpointText.contains("archivedIssues.size() != issueIdBatch.size()"))
-ok("Jira reads app custom-field values from archived Work Items",
+ok("Jira reads app custom-field values from archived Issues",
     endpointText.contains("customField.getValue(issue)"))
-ok("Jira does not turn disabled Work Item counts into partial Space reach",
+ok("Jira does not turn disabled Issue counts into partial Project reach",
     endpointText.contains("app.finish(issueCounts ? activeIssuesByProject : null,"))
-ok("Jira partitions reach through the complete Space inventories",
+ok("Jira partitions reach through the complete Project inventories",
     endpointText.contains("ProjectPartition.split("))
 ok("Jira marks an exhausted archived field scan as budgeted",
     endpointText.contains("field.issueSplitState = Fp.BUDGET"))
-ok("Jira derives the workflow denominator from active Space reach",
+ok("Jira derives the workflow denominator from active Project reach",
     endpointText.contains("totalActiveProjectWorkflows"))
+ok("Jira active workflow completeness does not depend on archive inventory when archive loading is off",
+    endpointText.contains("boolean activeProjectWorkflowInventoryComplete = includeReach && workflowInventoryComplete &&\n" +
+        "        activeProjectInventoryComplete\n"))
 ok("Jira options expose includeArchived",
     endpointText.contains("includeArchived: includeArchived"))
 ok("Jira HTML exposes the archived toggle",
     endpointText.contains('>Archived</a>'))
-ok("Jira header names the active Space population",
-    endpointText.contains('${num(activeProjectIdByKey.size())} active Spaces'))
-ok("Jira header names the archived Space population",
-    endpointText.contains("num(archivedProjectIdByKey.size()) + ' archived Spaces'"))
-ok("Jira toolbar uses current Work Item terminology",
-    endpointText.contains('>Work Item counts</a>'))
-ok("Jira toolbar uses current Space terminology",
-    endpointText.contains('>Space reach</a>'))
-ok("Jira visible impact reasons use current Work Item terminology",
-    !endpointText.contains('"Issue-field association density"'))
+ok("Jira header names the active Project population",
+    endpointText.contains('${num(activeProjectIdByKey.size())} active Projects'))
+ok("Jira header names the archived Project population",
+    endpointText.contains("num(archivedProjectIdByKey.size()) + ' archived Projects'"))
+ok("Jira toolbar uses Jira DC Issue terminology",
+    endpointText.contains('>Issue counts</a>'))
+ok("Jira toolbar uses Jira DC Project terminology",
+    endpointText.contains('>Project reach</a>'))
+ok("Jira visible impact reasons use Jira DC Issue terminology",
+    endpointText.contains('"Issue-field association density"'))
 ok("Jira HTML renders the legacy-only counter",
     endpointText.contains('<span class="badge badge-archived">LEGACY ONLY ${legacyOnlyApps}</span>'))
 ok("Jira HTML filters legacy-only assessments",
@@ -905,7 +914,8 @@ ok("Jira page-export summary exports legacy-only assessments",
     endpointText.contains('exportImpact.put("legacyOnly", Integer.valueOf(legacyOnlyApps))'))
 ok("Jira CSV exports active and archived evidence",
     endpointText.contains("activeIssueFieldAssociations,archivedIssueFieldAssociations") &&
-    endpointText.contains("activeImpactedSpaces,archivedImpactedSpaces"))
+    endpointText.contains("activeImpactedProjects,archivedImpactedProjects") &&
+    endpointText.contains("activeImpactedIssues,archivedImpactedIssues"))
 ok("Jira CSV exports measurement states with nullable evidence",
     endpointText.contains("associationState,issueSplitState") &&
     endpointText.contains("activeReachState,archivedReachState"))
@@ -933,22 +943,22 @@ Map<String, Object> archiveParitySummary = [
     screenPlacements: 0, workflowReferences: 1, workflowsScanned: 1, workflowsTotal: 1,
     activeReachState: Fp.MEASURED,
     archivedReachState: Fp.MEASURED,
-    activeImpactedSpaces: 2,
-    archivedImpactedSpaces: 1,
-    activeImpactedWorkItems: 11L,
-    archivedImpactedWorkItems: 7L,
+    activeImpactedProjects: 2,
+    archivedImpactedProjects: 1,
+    activeImpactedIssues: 11L,
+    archivedImpactedIssues: 7L,
     customFieldsTotal: 10, customFieldsWithUnresolvedType: 0,
     issueCountsSkippedByBudget: 0, readErrors: 0, observations: 0
 ] as LinkedHashMap<String, Object>
 String archiveParitySummaryHtml = PageExport.renderSummary(archiveParitySummary, Locale.US)
-ok("Jira page-export summary labels active Work Item associations",
-    archiveParitySummaryHtml.contains("Work Item-field associations - active"))
-ok("Jira page-export summary labels archived Work Item associations",
-    archiveParitySummaryHtml.contains("Work Item-field associations - archived"))
-ok("Jira page-export summary labels active Space reach",
-    archiveParitySummaryHtml.contains("Spaces touched by an app - active"))
-ok("Jira page-export summary labels archived Work Item reach",
-    archiveParitySummaryHtml.contains("Work Items in the reach of an app - archived"))
+ok("Jira page-export summary labels active Issue associations",
+    archiveParitySummaryHtml.contains("Issue-field associations - active"))
+ok("Jira page-export summary labels archived Issue associations",
+    archiveParitySummaryHtml.contains("Issue-field associations - archived"))
+ok("Jira page-export summary labels active Project reach",
+    archiveParitySummaryHtml.contains("Projects touched by an app - active"))
+ok("Jira page-export summary labels archived Issue reach",
+    archiveParitySummaryHtml.contains("Issues in the reach of an app - archived"))
 
 Map<String, Object> archiveParityAppRow = [
     pluginKey: "example.app", displayName: "Example", vendor: "Vendor", version: "1",
@@ -959,41 +969,41 @@ Map<String, Object> archiveParityAppRow = [
     screenPlacements: 0, uniqueScreens: 0, workflows: 1, activeWorkflows: 1,
     workflowReferences: 1,
     activeReachState: Fp.MEASURED, archivedReachState: Fp.MEASURED,
-    activeImpactedSpaces: 2, archivedImpactedSpaces: 1,
-    activeImpactedWorkItems: 11L, archivedImpactedWorkItems: 7L,
+    activeImpactedProjects: 2, archivedImpactedProjects: 1,
+    activeImpactedIssues: 11L, archivedImpactedIssues: 7L,
     diagnostics: 0
 ] as LinkedHashMap<String, Object>
 String archiveParityAppsHtml = PageExport.renderApps(
     [archiveParityAppRow], new DecisionRead(), new ExportOutcome(), Locale.US)
 ok("Jira page-export app table labels active/archive associations",
-    archiveParityAppsHtml.contains("Work Item Associations - Active / Archived"))
+    archiveParityAppsHtml.contains("Issue Associations - Active / Archived"))
 ok("Jira page-export app table renders active/archive association values",
     archiveParityAppsHtml.contains("4 / 3"))
-ok("Jira page-export app table labels active/archive Space reach",
-    archiveParityAppsHtml.contains("Spaces Touched - Active / Archived"))
-ok("Jira page-export app table labels active/archive Work Item reach",
-    archiveParityAppsHtml.contains("Work Items In Reach - Active / Archived"))
-ok("Jira app cards expose active Work Item associations",
+ok("Jira page-export app table labels active/archive Project reach",
+    archiveParityAppsHtml.contains("Projects Touched - Active / Archived"))
+ok("Jira page-export app table labels active/archive Issue reach",
+    archiveParityAppsHtml.contains("Issues In Reach - Active / Archived"))
+ok("Jira app cards expose active Issue associations",
     endpointText.contains('num(app.activeIssueFieldAssociations)') &&
-    endpointText.contains('Work Item Associations &middot; Active'))
-ok("Jira app cards expose archived Work Item associations",
+    endpointText.contains('Issue Associations &middot; Active'))
+ok("Jira app cards expose archived Issue associations",
     endpointText.contains('num(app.archivedIssueFieldAssociations)') &&
-    endpointText.contains('Work Item Associations &middot; Archived'))
+    endpointText.contains('Issue Associations &middot; Archived'))
 ok("Jira active summary uses the active reach completeness flag",
-    endpointText.contains('Spaces Touched · Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete)'))
+    endpointText.contains('Projects Touched · Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete)'))
 ok("Jira archived summary uses the archived reach completeness flag",
-    endpointText.contains('Spaces Touched · Archived${includeReach && includeArchived && (archivedReachTotalsPartial || archivedReachInventoryIncomplete)'))
+    endpointText.contains('Projects Touched · Archived${includeReach && includeArchived && (archivedReachTotalsPartial || archivedReachInventoryIncomplete)'))
 ok("Jira association summaries render off when the split is disabled",
     endpointText.contains('${issueCounts && includeArchived ? num(totalActiveIssueFieldAssociations)') &&
     endpointText.contains('${issueCounts && includeArchived ? num(totalArchivedIssueFieldAssociations)'))
-ok("Jira aggregate app association renders off when Work Item counts are disabled",
+ok("Jira aggregate app association renders off when Issue counts are disabled",
     endpointText.contains('${issueCounts ? num(app.issueFieldAssociations)'))
-ok("Jira active reach card hides Work Item totals when counts are disabled",
+ok("Jira active reach card hides Issue totals when counts are disabled",
     endpointText.contains('${issueCounts && app.activeImpactedIssues != null ?'))
-ok("Jira archived reach card hides Work Item totals when counts are disabled",
+ok("Jira archived reach card hides Issue totals when counts are disabled",
     endpointText.contains('${issueCounts && includeArchived && app.archivedImpactedIssues != null ?'))
 ok("Jira interpretation notes define active/archive separation",
-    endpointText.contains("Archived Spaces and Work Items are reported separately"))
+    endpointText.contains("Archived Projects and Issues are reported separately"))
 ok("Jira uses the shared 50 percent band",
     endpointText.contains('static final BigDecimal CRITICAL_PERCENT = new BigDecimal("50")'))
 ok("Jira uses the shared 20 percent band",
