@@ -59,6 +59,11 @@
  * =============================================================================
  */
 
+import com.atlassian.confluence.api.model.content.Space as ApiSpace
+import com.atlassian.confluence.api.model.content.SpaceStatus as ApiSpaceStatus
+import com.atlassian.confluence.api.model.pagination.PageResponse
+import com.atlassian.confluence.api.model.pagination.SimplePageRequest
+import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService
 import com.atlassian.confluence.core.BodyContent
 import com.atlassian.confluence.core.BodyType
 import com.atlassian.confluence.core.DefaultSaveContext
@@ -82,7 +87,7 @@ import com.atlassian.confluence.search.v2.query.InSpaceQuery
 import com.atlassian.confluence.search.v2.query.MacroUsageQuery
 import com.atlassian.confluence.search.v2.query.TextFieldQuery
 import com.atlassian.confluence.search.v2.query.WildcardTextFieldQuery
-import com.atlassian.confluence.setup.settings.SettingsManager
+import com.atlassian.confluence.setup.settings.GlobalSettingsManager
 import com.atlassian.confluence.spaces.Space
 import com.atlassian.confluence.spaces.SpaceManager
 import com.atlassian.confluence.spaces.SpaceStatus
@@ -127,7 +132,7 @@ class Cfp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "4.4"
+    static final String VERSION = "4.5"
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
@@ -3710,29 +3715,43 @@ appFootprint(
     }
 
     if (requestedAction == "spaces") {
-        SpaceManager spaceLookup = ComponentLocator.getComponent(SpaceManager.class)
-        if (spaceLookup == null) {
-            return refuse(500, "spaces", "The SpaceManager could not be resolved, so the space list could not be read. " +
+        ApiSpaceService apiSpaceService = ComponentLocator.getComponent(ApiSpaceService.class)
+        if (apiSpaceService == null) {
+            return refuse(500, "spaces", "The Confluence SpaceService could not be resolved, so the space list could not be read. " +
                 "That is a failed read, not an instance without spaces.")
         }
 
         List<Map<String, Object>> spaceRows = new ArrayList<Map<String, Object>>()
         try {
             /* Same inventory the report itself measures with: current spaces only,
-             * names taken from the Space objects. A failure here is reported as a
-             * failure and never degrades into an empty list. */
-            Set<String> currentKeys = new HashSet<String>()
-            currentKeys.addAll(spaceLookup.getAllSpaceKeys(SpaceStatus.CURRENT))
-            for (Space space : spaceLookup.getAllSpaces()) {
-                String key = space == null ? null : space.getKey()
-                if (key == null || !currentKeys.contains(key)) {
-                    continue
+             * names taken from the API Space objects. Every page is read; a response
+             * that claims more results without advancing is a failed inventory. */
+            int spaceStart = 0
+            final int spacePageSize = 100
+            while (true) {
+                PageResponse<ApiSpace> spacePage = apiSpaceService
+                    .find()
+                    .withStatus(ApiSpaceStatus.CURRENT)
+                    .fetchMany(new SimplePageRequest(spaceStart, spacePageSize))
+                for (ApiSpace space : spacePage.getResults()) {
+                    String key = space == null ? null : space.getKey()
+                    if (key == null) {
+                        continue
+                    }
+                    String name = space.getName()
+                    Map<String, Object> row = new LinkedHashMap<String, Object>()
+                    row.put("key", key)
+                    row.put("name", name == null || name.trim().isEmpty() ? key : name)
+                    spaceRows.add(row)
                 }
-                String name = space.getName()
-                Map<String, Object> row = new LinkedHashMap<String, Object>()
-                row.put("key", key)
-                row.put("name", name == null || name.trim().isEmpty() ? key : name)
-                spaceRows.add(row)
+                if (!spacePage.hasMore()) {
+                    break
+                }
+                int returned = spacePage.size()
+                if (returned <= 0) {
+                    throw new IllegalStateException("Space pagination did not advance")
+                }
+                spaceStart += returned
             }
         } catch (Exception error) {
             return refuse(500, "spaces", "The space list could not be read (" + PageExport.errorDetail(error) +
@@ -3977,13 +3996,13 @@ appFootprint(
 
     /* The base URL is read from this instance, never taken from the payload the
      * browser sent back. An administrator could edit the payload; they cannot edit
-     * what SettingsManager reports. It is resolved before rendering so the page
+     * what GlobalSettingsManager reports. It is resolved before rendering so the page
      * always names the instance it describes, and it costs nothing at runtime:
      * Settings.getBaseUrl() is a local read, no network call. */
     String instanceBaseUrl = null
     String instanceSiteTitle = null
     try {
-        SettingsManager reportSettings = ComponentLocator.getComponent(SettingsManager.class)
+        GlobalSettingsManager reportSettings = ComponentLocator.getComponent(GlobalSettingsManager.class)
         if (reportSettings != null) {
             String rawBaseUrl = reportSettings.getGlobalSettings().getBaseUrl()
             if (rawBaseUrl != null && !rawBaseUrl.trim().isEmpty()) {
@@ -4152,14 +4171,14 @@ appFootprint(
     }
 
     /* Browse URL of the written page, built from this instance's own base URL and
-     * the page id that was read back after the save. SettingsManager.getGlobalSettings()
+     * the page id that was read back after the save. GlobalSettingsManager.getGlobalSettings()
      * hands out Settings and Settings.getBaseUrl() is the configured base URL of this
      * instance; no network call is involved. A base URL that cannot be read costs the
      * link and says so - it never costs the write, which has already happened. */
     String pageUrl = null
     String pageUrlPrefix = null
     try {
-        SettingsManager settingsManager = ComponentLocator.getComponent(SettingsManager.class)
+        GlobalSettingsManager settingsManager = ComponentLocator.getComponent(GlobalSettingsManager.class)
         String baseUrl = settingsManager == null ? null : settingsManager.getGlobalSettings().getBaseUrl()
         if (baseUrl != null && !baseUrl.trim().isEmpty()) {
             String prefix = baseUrl.trim()
