@@ -4254,6 +4254,9 @@ tbody tr:hover { background: var(--surface-subtle); }
 details { margin-top: 10px; }
 summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue); padding: 4px 0; }
 .table-wrap { overflow-x: auto; }
+.workflow-table { table-layout: fixed; }
+.workflow-table th { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
+.workflow-table td { overflow-wrap: anywhere; }
 .footer { margin-top: 24px; padding: 16px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--text-subtle); }
 .footer ul { margin: 8px 0; padding-left: 18px; }
 .footer li { margin: 3px 0; }
@@ -4799,7 +4802,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
             html.append("""    <div class="empty">No references to this app were found in the persisted workflow descriptors.</div>\n""")
         } else {
             html.append("""    <div class="table-wrap">
-    <table>
+    <table class="workflow-table">
         <thead>
             <tr>
                 <th>Workflow</th>
@@ -4808,10 +4811,10 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 <th class="num">Plugin Key Hits</th>
                 <th class="num">Module Class Hits</th>
                 <th>Detection</th>
-                <th>Active Projects Using This Workflow</th>
-                <th>Archived Projects Using This Workflow</th>
-                <th class="num">Active Issues In Them</th>
-                <th class="num">Archived Issues In Them</th>
+                <th>Active Projects</th>
+                <th>Archived Projects</th>
+                <th class="num">Active Issues</th>
+                <th class="num">Archived Issues</th>
             </tr>
         </thead>
         <tbody>
