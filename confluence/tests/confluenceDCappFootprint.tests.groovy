@@ -1367,6 +1367,9 @@ ok("service-locator contract can read the endpoint source", endpointSource.isFil
 String endpointText = endpointSource.isFile() ? endpointSource.getText("UTF-8") : ""
 ok("no deprecated PageManager lookup remains", !endpointText.contains("pageManager.getPage("))
 ok("no deprecated SpaceManager lookup remains", !endpointText.contains("spaceManager.getSpace("))
+ok("no deprecated getAllSpaces call remains", !endpointText.contains(".getAllSpaces("))
+ok("no deprecated SettingsManager type remains",
+    !(endpointText =~ /\bSettingsManager\b/).find())
 ok("deprecation warnings are not suppressed", !endpointText.contains('SuppressWarnings("deprecation")'))
 check("all title lookups use PageService", endpointText.count("pageService.getTitleAndSpaceKeyPageLocator("), 5)
 check("all id lookups use PageService", endpointText.count("pageService.getIdPageLocator("), 2)
@@ -1375,6 +1378,14 @@ ok("persistence PageService is imported",
     endpointText.contains("import com.atlassian.confluence.content.service.PageService"))
 ok("persistence SpaceService is imported",
     endpointText.contains("import com.atlassian.confluence.content.service.SpaceService"))
+ok("API SpaceService is imported with a distinct name",
+    endpointText.contains("import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService"))
+check("the current-space finder is paginated", endpointText.count(".withStatus(ApiSpaceStatus.CURRENT)"), 1)
+check("space pagination checks for more results", endpointText.count("spacePage.hasMore()"), 1)
+ok("GlobalSettingsManager is imported",
+    endpointText.contains("import com.atlassian.confluence.setup.settings.GlobalSettingsManager"))
+check("both settings reads resolve GlobalSettingsManager",
+    endpointText.count("ComponentLocator.getComponent(GlobalSettingsManager.class)"), 2)
 
 /* ---- result --------------------------------------------------------------- */
 
