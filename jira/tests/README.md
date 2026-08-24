@@ -151,9 +151,9 @@ instance.
 
 ## Last recorded run
 
-2026-08-24: 449 assertions green, parse check green. Red-before-green measurement of the
+2026-08-24: 452 assertions green, parse check green. Red-before-green measurement of the
 same run: eight position cases, the create-only control refuses six moves and claims four
 parents the measurement does not confirm.
 
 Benchmark over 100 workflows, 19.3 million characters of XML and 100 apps: old scan
-3811 ms, new scan 1042 ms, identical results.
+3638 ms, new scan 912 ms, identical results.

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep the Jira Workflow Footprint table inside its app card without removing columns or changing measured data.
+**Goal:** Keep both ten-column Jira footprint tables inside their app cards without removing columns or changing measured data.
 
-**Architecture:** Add a table-specific CSS contract and compact the four redundant reach headers. The existing HTML table remains the rendering mechanism; no data or endpoint behavior changes.
+**Architecture:** Add a shared CSS contract scoped to the Workflow and Custom Field footprint tables and compact their verbose measurement headers. The existing HTML tables remain the rendering mechanism; no data or endpoint behavior changes.
 
 **Tech Stack:** Groovy ScriptRunner endpoint, embedded HTML/CSS, Groovy offline source-contract tests.
 
@@ -17,7 +17,7 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Assert that the endpoint contains `class="workflow-table"`, a fixed-layout table rule, wrapping rules scoped to `.workflow-table`, and the four compact headers. Assert that the four verbose headers are absent.
+Assert that the endpoint contains exactly two `class="footprint-table"` tables in the correct sections, fixed-layout and wrapping rules scoped to `.footprint-table`, and compact headers for both tables.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -34,14 +34,14 @@ Expected: the new layout-contract assertions fail while the existing assertions 
 - [ ] **Step 1: Add the table-specific CSS**
 
 ```css
-.workflow-table { table-layout: fixed; }
-.workflow-table th { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
-.workflow-table td { overflow-wrap: anywhere; }
+.footprint-table { table-layout: fixed; }
+.footprint-table th { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
+.footprint-table td { overflow-wrap: anywhere; }
 ```
 
 - [ ] **Step 2: Apply the class and compact the headers**
 
-Use `<table class="workflow-table">` and replace the four verbose reach headers with `Active Projects`, `Archived Projects`, `Active Issues`, and `Archived Issues`.
+Use `<table class="footprint-table">` for both wide tables. Keep the compact Workflow headers and replace the four verbose Custom Field headers with `Issues · Active`, `Issues · Archived`, `Screen Reach · Active`, and `Screen Reach · Archived`, retaining their full wording in `title` attributes.
 
 - [ ] **Step 3: Run the Jira suite**
 

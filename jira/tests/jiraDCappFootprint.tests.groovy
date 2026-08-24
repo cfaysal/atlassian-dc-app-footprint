@@ -904,15 +904,23 @@ ok("Jira toolbar uses Jira DC Project terminology",
     endpointText.contains('>Project reach</a>'))
 int customFieldSection = endpointText.indexOf('<div class="section-title">Custom Field Footprint</div>')
 int workflowSection = endpointText.indexOf('<div class="section-title">Workflow Footprint</div>')
-int workflowTable = endpointText.indexOf('<table class="workflow-table">')
-ok("Jira Workflow Footprint uses its own fixed-layout table",
+int customFieldTable = endpointText.indexOf('<table class="footprint-table">', customFieldSection)
+int workflowTable = endpointText.indexOf('<table class="footprint-table">', workflowSection)
+ok("Jira Custom Field Footprint uses the shared fixed-layout table",
     customFieldSection >= 0 && workflowSection > customFieldSection &&
+    customFieldTable > customFieldSection && customFieldTable < workflowSection)
+ok("Jira Workflow Footprint uses the shared fixed-layout table",
     workflowTable > workflowSection &&
-    !endpointText.substring(customFieldSection, workflowSection).contains('class="workflow-table"') &&
-    endpointText.contains('.workflow-table { table-layout: fixed; }'))
-ok("Jira Workflow Footprint wraps headers and long cell values locally",
-    endpointText.contains('.workflow-table th { white-space: normal;') &&
-    endpointText.contains('.workflow-table td { overflow-wrap: anywhere; }'))
+    endpointText.count('<table class="footprint-table">') == 2 &&
+    endpointText.contains('.footprint-table { table-layout: fixed; }'))
+ok("Jira wide footprint tables wrap headers and long cell values locally",
+    endpointText.contains('.footprint-table th { white-space: normal;') &&
+    endpointText.contains('.footprint-table td { overflow-wrap: anywhere; }'))
+ok("Jira Custom Field Footprint uses compact measurement headers",
+    endpointText.contains('<th class="num" title="Issues With Value · Active">Issues · Active</th>') &&
+    endpointText.contains('<th class="num" title="Issues With Value · Archived">Issues · Archived</th>') &&
+    endpointText.contains('<th title="Active Projects Reached Via Screens">Screen Reach · Active</th>') &&
+    endpointText.contains('<th title="Archived Projects Reached Via Screens">Screen Reach · Archived</th>'))
 ok("Jira Workflow Footprint uses compact reach headers",
     endpointText.contains('<th>Active Projects</th>') &&
     endpointText.contains('<th>Archived Projects</th>') &&
@@ -923,6 +931,8 @@ ok("Jira Workflow Footprint removes redundant verbose reach headers",
     !endpointText.contains('Archived Projects Using This Workflow') &&
     !endpointText.contains('Active Issues In Them') &&
     !endpointText.contains('Archived Issues In Them'))
+ok("Jira no longer carries the too-narrow Workflow-only table class",
+    !endpointText.contains('workflow-table'))
 ok("Jira visible impact reasons use Jira DC Issue terminology",
     endpointText.contains('"Issue-field association density"'))
 ok("Jira HTML renders the legacy-only counter",

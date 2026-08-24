@@ -4254,9 +4254,9 @@ tbody tr:hover { background: var(--surface-subtle); }
 details { margin-top: 10px; }
 summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue); padding: 4px 0; }
 .table-wrap { overflow-x: auto; }
-.workflow-table { table-layout: fixed; }
-.workflow-table th { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
-.workflow-table td { overflow-wrap: anywhere; }
+.footprint-table { table-layout: fixed; }
+.footprint-table th { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
+.footprint-table td { overflow-wrap: anywhere; }
 .footer { margin-top: 24px; padding: 16px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--text-subtle); }
 .footer ul { margin: 8px 0; padding-left: 18px; }
 .footer li { margin: 3px 0; }
@@ -4695,19 +4695,19 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
             html.append("""    <div class="empty">No instantiated custom fields using a custom-field type provided by this app were detected.</div>\n""")
         } else {
             html.append("""    <div class="table-wrap">
-    <table>
+    <table class="footprint-table">
         <thead>
             <tr>
                 <th>Field</th>
                 <th>Custom Field Type</th>
-                <th class="num">Issues With Value · Active</th>
-                <th class="num">Issues With Value · Archived</th>
+                <th class="num" title="Issues With Value · Active">Issues · Active</th>
+                <th class="num" title="Issues With Value · Archived">Issues · Archived</th>
                 <th class="num">Contexts</th>
                 <th>Project Scope</th>
                 <th>Issue Type Scope</th>
                 <th class="num">Screens</th>
-                <th>Active Projects Reached Via Screens</th>
-                <th>Archived Projects Reached Via Screens</th>
+                <th title="Active Projects Reached Via Screens">Screen Reach · Active</th>
+                <th title="Archived Projects Reached Via Screens">Screen Reach · Archived</th>
             </tr>
         </thead>
         <tbody>
@@ -4802,7 +4802,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
             html.append("""    <div class="empty">No references to this app were found in the persisted workflow descriptors.</div>\n""")
         } else {
             html.append("""    <div class="table-wrap">
-    <table class="workflow-table">
+    <table class="footprint-table">
         <thead>
             <tr>
                 <th>Workflow</th>
