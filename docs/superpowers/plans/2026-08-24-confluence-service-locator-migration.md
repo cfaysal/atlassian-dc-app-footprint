@@ -211,3 +211,101 @@ git commit -m "OP-960 refactor: replace deprecated Confluence lookups"
 - [ ] **Step 4: Record acceptance evidence in OP-960**
 
 Comment with the red/green assertion results, parsecheck, focused lookup counts, hash equality, and final commit. Keep OP-960 In Progress because the required Confluence 10.2.10 / ScriptRunner 10 runtime smoke test is not performed by this local refactor; service resolution at the target remains `UNKNOWN` until measured.
+
+### Task 7: Add RED coverage for the remaining deprecated APIs
+
+**Files:**
+- Modify: `confluence/tests/confluenceDCappFootprint.tests.groovy:1368-1377`
+- Test: `confluence/tests/confluenceDCappFootprint.tests.groovy`
+
+- [ ] **Step 1: Extend the source contract**
+
+Add assertions which reject `.getAllSpaces(` and the exact `SettingsManager` token, require
+the API `SpaceService` alias and paginated current-space finder, and require
+`GlobalSettingsManager`:
+
+```groovy
+ok("no deprecated getAllSpaces call remains", !endpointText.contains(".getAllSpaces("))
+ok("no deprecated SettingsManager type remains",
+    !(endpointText =~ /\bSettingsManager\b/).find())
+ok("API SpaceService is imported with a distinct name",
+    endpointText.contains("import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService"))
+check("the current-space finder is paginated", endpointText.count(".withStatus(ApiSpaceStatus.CURRENT)"), 1)
+check("space pagination checks for more results", endpointText.count("spacePage.hasMore()"), 1)
+ok("GlobalSettingsManager is imported",
+    endpointText.contains("import com.atlassian.confluence.setup.settings.GlobalSettingsManager"))
+check("both settings reads resolve GlobalSettingsManager",
+    endpointText.count("ComponentLocator.getComponent(GlobalSettingsManager.class)"), 2)
+```
+
+- [ ] **Step 2: Run the complete suite and prove RED**
+
+Run the existing plugin-dev Pod test command. Expected: the existing assertions remain
+green and the new contract fails on `getAllSpaces()`, `SettingsManager`, missing API
+finder pagination, and missing `GlobalSettingsManager`.
+
+- [ ] **Step 3: Commit the RED test**
+
+```bash
+git add confluence/tests/confluenceDCappFootprint.tests.groovy
+git commit -m "OP-960 test: cover remaining Confluence deprecations"
+```
+
+### Task 8: Replace the remaining deprecated APIs and prove GREEN
+
+**Files:**
+- Modify: `confluence/confluenceDCappFootprint.groovy:62-90,3713-3742,3978-3998,4154-4164`
+- Modify: `README.md`
+- Modify: `CHANGELOG.md`
+- Modify: `D:/CFcon-DEV/My Scripts/scriptrunner/rest-endpoints/confluenceDCappFootprint.groovy`
+
+- [ ] **Step 1: Import the current public APIs**
+
+```groovy
+import com.atlassian.confluence.api.model.content.Space as ApiSpace
+import com.atlassian.confluence.api.model.content.SpaceStatus as ApiSpaceStatus
+import com.atlassian.confluence.api.model.pagination.PageResponse
+import com.atlassian.confluence.api.model.pagination.SimplePageRequest
+import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService
+import com.atlassian.confluence.setup.settings.GlobalSettingsManager
+```
+
+Remove the deprecated `SettingsManager` import. Keep the distinct persistence-model
+`SpaceService`, `Space`, `SpaceManager`, and `SpaceStatus` imports for their existing
+non-deprecated call sites.
+
+- [ ] **Step 2: Replace the staged space inventory with complete API pagination**
+
+Resolve `ApiSpaceService`, query `ApiSpaceStatus.CURRENT`, add every returned API space's
+key and name to `spaceRows`, and advance by `spacePage.size()` while
+`spacePage.hasMore()` is true. Throw if a page claims more results but returns zero so a
+partial inventory can never be reported as complete.
+
+- [ ] **Step 3: Narrow both settings reads**
+
+Replace both `SettingsManager` declarations and class literals with
+`GlobalSettingsManager`, and update the surrounding comments without changing the base
+URL or site-title behavior.
+
+- [ ] **Step 4: Advance the Confluence source version**
+
+Change only the Confluence endpoint from `4.4` to `4.5` in `Cfp.VERSION` and the README,
+then extend the existing OP-960 changelog entry to name the API space finder and
+`GlobalSettingsManager` replacement.
+
+- [ ] **Step 5: Run GREEN verification**
+
+Run the full suite and parse check in plugin-dev. Then require no matches from:
+
+```bash
+rg -n '\.getAllSpaces\(|\bSettingsManager\b|SuppressWarnings\("deprecation"\)' confluence/confluenceDCappFootprint.groovy
+```
+
+Inspect `git diff --check` and the complete authorized diff.
+
+- [ ] **Step 6: Synchronize, verify, commit, and update OP-960**
+
+Copy the verified endpoint byte-for-byte to the active ScriptRunner source, compare both
+SHA-256 values, commit repository changes with an `OP-960 ` subject, and record RED/GREEN,
+parse, signature, hash, and commit evidence in OP-960. Keep the item In Progress until the
+Director confirms the Confluence runtime smoke test.
