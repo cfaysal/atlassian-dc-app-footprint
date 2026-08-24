@@ -6,10 +6,10 @@ the footprint aggregation, and the whole Confluence page export including the de
 parser and the storage-format renderer. This suite tests exactly those, with no Confluence
 on the classpath and no running instance.
 
-The classes free of every Confluence type are `Cfp`, `ImpactPolicy`, `ImpactAssessment`,
-`ExtensionModuleInfo`, `MacroFootprint`, `AppFootprint`, `DecisionRead`, `ExportOutcome`
-and `PageExport`. `Analyzer` sits between them in the file, touches Confluence search
-types, and is therefore left out of the cut.
+The classes free of every Confluence type are `Cfp`, `ImpactPolicy`, `ImpactDimension`,
+`ImpactAssessment`, `ExtensionModuleInfo`, `MacroFootprint`, `AppFootprint`,
+`ImpactAnalyzer`, `DecisionRead`, `ExportOutcome` and `PageExport`. `Analyzer` sits between
+them in the file, touches Confluence search types, and is therefore left out of the cut.
 
 `Cfp` names five platform types in method signatures. The suite declares five empty
 placeholder interfaces so the cut resolves. Only `MultivaluedMap` gets a real method, so
@@ -104,6 +104,10 @@ That is precisely the defect the position logic replaced.
   report actually shows the message.
 - Storage-format rendering: a budgeted row renders `n/m` and contains no zero, while a
   genuinely measured zero still renders as zero.
+- The shared instance-relative impact bands, max-of-dimensions behavior, small-instance and
+  large-instance cases, missing denominators, partial lower bounds, complete zero,
+  archived-only handling, CSV evidence, the disabled-scan counter and the visible Instance
+  and Base URL block.
 
 ## What is not covered
 
@@ -166,7 +170,7 @@ the instance.
 
 ## Last recorded run
 
-2026-08-22: 461 assertions green, parse check green. Red-before-green measurement of the
+2026-08-24: 535 assertions green, parse check green. Red-before-green measurement of the
 same run: nine malformed fixtures, the parser refuses nine and the control refuses six;
 eight position cases, the create-only control refuses six moves and claims four parents the
 measurement does not confirm.

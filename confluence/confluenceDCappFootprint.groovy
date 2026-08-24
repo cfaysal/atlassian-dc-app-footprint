@@ -134,7 +134,7 @@ class Cfp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "4.5"
+    static final String VERSION = "4.6"
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
@@ -2636,6 +2636,7 @@ appFootprint(
     int legacyOnlyApps = 0
     int reviewApps = 0
     int noFootprintApps = 0
+    int notScannedApps = 0
     int totalProvidedMacros = 0
     int totalEnabledMacros = 0
     int totalCurrentUsedMacros = 0
@@ -2674,6 +2675,7 @@ appFootprint(
         else if (impact.level == "LEGACY_ONLY") legacyOnlyApps++
         else if (impact.level == "REVIEW_REQUIRED") reviewApps++
         else if (impact.level == "NO_DETECTABLE_FOOTPRINT") noFootprintApps++
+        else if (impact.level == "NOT_SCANNED") notScannedApps++
 
         totalProvidedMacros += app.macros.size()
         totalEnabledMacros += app.enabledMacroCount
@@ -2770,7 +2772,8 @@ appFootprint(
                     low: lowApps,
                     legacyOnly: legacyOnlyApps,
                     reviewRequired: reviewApps,
-                    noDetectableFootprint: noFootprintApps
+                    noDetectableFootprint: noFootprintApps,
+                    notScanned: notScannedApps
                 ] as LinkedHashMap,
                 capabilities: [
                     providedMacros: totalProvidedMacros,
@@ -2905,7 +2908,7 @@ appFootprint(
                 .build()
         }
 
-        csv.append("pluginKey,displayName,vendor,version,enabled,state,systemProvided,impact,enabledModules,providedMacros,enabledMacros,blueprints,templates,customContentModules,currentUsedMacros,currentUniqueContent,currentAssociations,currentSpaces,currentComplete,archivedUsedMacros,archivedUniqueContent,archivedAssociations,archivedSpaces,archivedComplete,diagnostics\n")
+        csv.append("pluginKey,displayName,vendor,version,enabled,state,systemProvided,impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions,enabledModules,providedMacros,enabledMacros,blueprints,templates,customContentModules,currentUsedMacros,currentUniqueContent,currentAssociations,currentSpaces,currentComplete,archivedUsedMacros,archivedUniqueContent,archivedAssociations,archivedSpaces,archivedComplete,diagnostics\n")
 
         for (AppFootprint app : apps) {
             ImpactAssessment impact = impacts.get(app.pluginKey)
@@ -2917,6 +2920,10 @@ appFootprint(
             csv.append(Cfp.csv(app.state)).append(",")
             csv.append(app.systemProvided).append(",")
             csv.append(Cfp.csv(impact.level)).append(",")
+            csv.append(Cfp.csv(impact.maxPercent.toPlainString())).append(",")
+            csv.append(impact.partial).append(",")
+            csv.append(Cfp.csv(String.join(" | ", impact.reasons))).append(",")
+            csv.append(Cfp.csv(JsonOutput.toJson(impact.asMap().get("dimensions")))).append(",")
             csv.append(app.enabledModuleCount).append(",")
             csv.append(app.macros.size()).append(",")
             csv.append(app.enabledMacroCount).append(",")
@@ -3017,6 +3024,9 @@ appFootprint(
         row.put("systemProvided", Boolean.valueOf(app.systemProvided))
         row.put("impactLevel", impact.level)
         row.put("impactLabel", impact.label)
+        row.put("impactMaxPercent", impact.maxPercent)
+        row.put("impactPartial", Boolean.valueOf(impact.partial))
+        row.put("impactReasons", impact.reasons)
         row.put("providedMacros", Integer.valueOf(app.macros.size()))
         row.put("currentState", PageExport.usageState(app, scanUsage, true))
         row.put("currentContent", Integer.valueOf(app.currentUniqueContentCount))
@@ -3036,6 +3046,7 @@ appFootprint(
     exportImpact.put("legacyOnly", Integer.valueOf(legacyOnlyApps))
     exportImpact.put("reviewRequired", Integer.valueOf(reviewApps))
     exportImpact.put("noDetectableFootprint", Integer.valueOf(noFootprintApps))
+    exportImpact.put("notScanned", Integer.valueOf(notScannedApps))
 
     Map<String, Object> exportCapabilities = new LinkedHashMap<String, Object>()
     exportCapabilities.put("providedMacros", Integer.valueOf(totalProvidedMacros))
@@ -3268,6 +3279,7 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
   <span class="badge badge-archived">LEGACY ONLY ${legacyOnlyApps}</span>
   <span class="badge badge-review">REVIEW REQUIRED ${reviewApps}</span>
   <span class="badge badge-none">NO DETECTABLE FOOTPRINT ${noFootprintApps}</span>
+  <span class="badge badge-none">NOT SCANNED ${notScannedApps}</span>
 </div>
 
 <div class="toolbar">
@@ -3281,6 +3293,7 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
     <option value="LEGACY_ONLY">Legacy only</option>
     <option value="REVIEW_REQUIRED">Review required</option>
     <option value="NO_DETECTABLE_FOOTPRINT">No detectable footprint</option>
+    <option value="NOT_SCANNED">Not scanned</option>
   </select>
   <label class="checkbox-label"><input id="currentOnly" type="checkbox" onchange="filterReport()"> Current footprint only</label>
   <label class="checkbox-label"><input id="diagnosticsOnly" type="checkbox" onchange="filterReport()"> Diagnostics only</label>

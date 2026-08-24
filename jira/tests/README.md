@@ -7,8 +7,9 @@ the space key validation and the page position logic. This suite tests exactly t
 no Jira on the classpath and no running instance.
 
 The classes free of every Jira type are `Fp`, `AppModuleInfo`, `ScreenPlacementInfo`,
-`CustomFieldFootprint`, `WorkflowSnapshot`, `WorkflowReference`, `AppFootprint`,
-`DecisionRead`, `ExportOutcome` and `PageExport`.
+`CustomFieldFootprint`, `WorkflowSnapshot`, `WorkflowReference`, `ImpactPolicy`,
+`ImpactDimension`, `ImpactAssessment`, `AppFootprint`, `ImpactAnalyzer`, `DecisionRead`,
+`ExportOutcome` and `PageExport`.
 
 ## What is covered
 
@@ -78,6 +79,9 @@ at all, so no number of them can make the box look like a fault.
   of projects across both paths, an issue count taken exactly once per project, the lower
   bound when a count is missing, and the never-evaluated case that must stay `n/e` rather
   than becoming zero.
+- The shared instance-relative impact bands, max-of-dimensions behavior, small-instance and
+  large-instance cases, missing denominators, partial lower bounds, complete zero, JSON
+  evidence, HTML counters/filtering, CSV evidence and Confluence page-export parity.
 - A head-to-head benchmark of the old algorithm against the three-stage scan, asserting
   that both produce identical results.
 
@@ -143,7 +147,7 @@ instance.
 
 ## Last recorded run
 
-2026-08-22: 273 assertions green, parse check green. Red-before-green measurement of the
+2026-08-24: 329 assertions green, parse check green. Red-before-green measurement of the
 same run: eight position cases, the create-only control refuses six moves and claims four
 parents the measurement does not confirm.
 

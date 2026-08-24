@@ -557,6 +557,13 @@ ImpactAssessment assessedApp = ImpactAnalyzer.assessJira(
 check("Jira highest product dimension wins", assessedApp.level, "MEDIUM")
 ok("Jira product reasons expose issue association density",
     assessedApp.reasons.any { String reason -> reason.contains("Issue-field association density") })
+Map<String, Object> assessedAppMap = app.asMap(false, assessedApp)
+Map<String, Object> assessedImpactMap = (Map<String, Object>) assessedAppMap.get("impact")
+check("Jira JSON app map exposes impact level", assessedImpactMap.get("level"), "MEDIUM")
+check("Jira JSON app map preserves raw reach state", assessedImpactMap.get("state"), Fp.NOT_EVALUATED)
+check("Jira JSON app map preserves raw reach uncertainty", assessedImpactMap.get("reachPartial"), false)
+ok("Jira JSON app map exposes impact dimensions",
+    ((List<Map<String, Object>>) assessedImpactMap.get("dimensions")).size() >= 2)
 
 AppFootprint broadSmallInstance = new AppFootprint()
 for (int index = 0; index < 8; index++) {
@@ -616,6 +623,28 @@ ok("Jira reads the instance issue denominator once",
     endpointText.contains("issueManager.getIssueCount()"))
 ok("Jira integrates the instance-aware product analyzer",
     endpointText.contains("ImpactAnalyzer.assessJira("))
+ok("Jira HTML renders the impact counter legend",
+    endpointText.contains('<span class="badge badge-critical">CRITICAL ${criticalApps}</span>'))
+ok("Jira HTML app cards carry a filterable impact level",
+    endpointText.contains('data-impact="${esc(impact.level)}"'))
+ok("Jira HTML app cards render impact reasons",
+    endpointText.contains('<ul class="impact-reasons">'))
+ok("Jira CSV exports impact evidence",
+    endpointText.contains("impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions"))
+ok("Jira decommission candidates require a complete measured zero",
+    endpointText.contains('else if (!app.systemProvided && impact.level == "NO_DETECTABLE_FOOTPRINT")'))
+ok("Jira Confluence export carries the impact label",
+    endpointText.contains('row.put("impactLabel", impact.label)'))
+ok("Jira Confluence export renders an Impact column",
+    endpointText.contains('out.append(head("Impact"))'))
+ok("Jira uses the shared 50 percent band",
+    endpointText.contains('static final BigDecimal CRITICAL_PERCENT = new BigDecimal("50")'))
+ok("Jira uses the shared 20 percent band",
+    endpointText.contains('static final BigDecimal HIGH_PERCENT = new BigDecimal("20")'))
+ok("Jira uses the shared 5 percent band",
+    endpointText.contains('static final BigDecimal MEDIUM_PERCENT = new BigDecimal("5")'))
+ok("Jira contains no absolute impact count thresholds",
+    !(endpointText =~ /(?:CRITICAL|HIGH|MEDIUM)_(?:CONTENT|ASSOCIATIONS|SPACES|ISSUES|PROJECTS|FIELDS|WORKFLOWS)/).find())
 
 /* ---- N. space key validation (OP-950 Q1) --------------------------------- */
 

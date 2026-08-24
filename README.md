@@ -10,8 +10,8 @@ These scripts measure that difference.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.1 |
-| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.5 |
+| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.2 |
+| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.6 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
 building the removal-risk section of an audit report, or justifying to a budget owner
@@ -114,6 +114,7 @@ All parameters are optional and are appended as query parameters.
 | `includeDisabled` | `true`, `false` | `true` | Include installed but disabled apps. |
 | `includeDrafts` | `true`, `false` | `false` | Include draft workflows in the scan. |
 | `includeModules` | `true`, `false` | `false` | Emit the full module list per app. |
+| `includeReach` | `true`, `false` | `true` | Measure the spaces and work items reached through workflows and screens. |
 | `issueCounts` | `true`, `false` | `true` | Count issues per app-provided custom field. |
 | `issueBudgetMs` | milliseconds | `120000` | Time budget for issue counting. `0` means unlimited. Fields beyond the budget are reported as NOT MEASURED, never as zero. |
 | `numbers` | `de`, `en` | `de` | Thousands separator style. |
@@ -200,6 +201,36 @@ counted from the search index. Two rules govern how that number is reported:
   would inflate that app's footprint with work it never did.
 
 Partial results are marked with an asterisk and are lower bounds, not estimates.
+
+## Instance-relative impact
+
+Both reports classify impact against the size of the instance they are scanning. Raw
+counts remain visible, but no absolute count makes an app Critical, High or Medium. Each
+available product-specific dimension is divided by its instance-wide denominator, and the
+highest resulting share determines the app's level:
+
+| Highest measured share | Impact |
+| ---: | --- |
+| at least 50% | Critical |
+| at least 20% | High |
+| at least 5% | Medium |
+| greater than 0% | Low |
+
+Jira evaluates issue-field associations and reached work items against all work items,
+reached spaces against all active spaces, app-owned custom fields against all custom
+fields, and referenced active workflows against all active workflows. Confluence evaluates
+current unique content and current macro associations against all current pages and blog
+posts, plus current space reach against all current spaces. Archived Confluence content is
+kept separate as `LEGACY_ONLY` and never raises the current impact level.
+
+The level is the maximum of the dimensions, not an average. Association ratios are capped
+at 100% for display because several associations can belong to one object. A partial
+positive measurement may raise the level and is labelled as a lower bound; it can never
+lower a known level. A partial zero becomes `REVIEW_REQUIRED`, while
+`NO_DETECTABLE_FOOTPRINT` is reserved for a complete measured zero. HTML, JSON, CSV and the
+Confluence page export carry the resulting level and evidence. The Confluence HTML report
+also names the instance, Base URL, product version/build and active scan options in the
+same way as the Jira report.
 
 ## Performance
 

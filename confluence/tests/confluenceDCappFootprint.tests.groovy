@@ -1533,6 +1533,20 @@ ok("main report renders the active Confluence scan options",
     endpointText.contains('<div><strong>Options:</strong> <span class="mono">includeSystem=${includeSystem} includeDisabled=${includeDisabled} includeArchived=${includeArchived} includeModules=${includeModules} scanUsage=${scanUsage} scanAliases=${scanAliases} scanBudgetMs=${scanBudgetMs}</span></div>'))
 ok("JSON report exports the Confluence Base URL",
     endpointText.contains('exportReport.put("baseUrl", instanceBaseUrl)'))
+ok("Confluence CSV exports relative impact evidence",
+    endpointText.contains("impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions"))
+ok("Confluence counts the disabled usage scan explicitly",
+    endpointText.contains("int notScannedApps = 0"))
+ok("Confluence renders a not-scanned impact counter",
+    endpointText.contains('<span class="badge badge-none">NOT SCANNED ${notScannedApps}</span>'))
+ok("Confluence uses the shared 50 percent band",
+    endpointText.contains('static final BigDecimal CRITICAL_PERCENT = new BigDecimal("50")'))
+ok("Confluence uses the shared 20 percent band",
+    endpointText.contains('static final BigDecimal HIGH_PERCENT = new BigDecimal("20")'))
+ok("Confluence uses the shared 5 percent band",
+    endpointText.contains('static final BigDecimal MEDIUM_PERCENT = new BigDecimal("5")'))
+ok("Confluence contains no absolute impact count thresholds",
+    !(endpointText =~ /(?:CRITICAL|HIGH|MEDIUM)_(?:CONTENT|ASSOCIATIONS|SPACES|ISSUES|PROJECTS|FIELDS|WORKFLOWS)/).find())
 
 /* ---- result --------------------------------------------------------------- */
 

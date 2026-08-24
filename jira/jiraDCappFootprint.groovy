@@ -130,7 +130,7 @@ class Fp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "3.1"
+    static final String VERSION = "3.2"
 
     /* A needle can only occur inside a single token, so shorter tokens are
      * dropped. Needles below this length fall back to a raw scan. */
@@ -1035,6 +1035,10 @@ class AppFootprint {
     }
 
     Map<String, Object> asMap(boolean includeModules) {
+        return asMap(includeModules, null)
+    }
+
+    Map<String, Object> asMap(boolean includeModules, ImpactAssessment assessment) {
         List<Map<String, Object>> fieldMaps = new ArrayList<Map<String, Object>>()
         for (CustomFieldFootprint field : customFields) {
             fieldMaps.add(field.asMap())
@@ -1043,6 +1047,14 @@ class AppFootprint {
         for (WorkflowReference reference : workflowReferences) {
             workflowMaps.add(reference.asMap())
         }
+
+        Map<String, Object> impactMap = assessment == null ?
+            new LinkedHashMap<String, Object>() : assessment.asMap()
+        impactMap.put("state", impactState)
+        impactMap.put("reachPartial", Boolean.valueOf(impactPartial))
+        impactMap.put("projectCount", Integer.valueOf(impactedProjectKeys.size()))
+        impactMap.put("projectKeys", impactedProjectKeys)
+        impactMap.put("issues", impactedIssues)
 
         Map<String, Object> result = [
             displayName: displayName,
@@ -1063,13 +1075,7 @@ class AppFootprint {
                 categories: categoryCounts,
                 moduleTypes: moduleTypeCounts
             ] as LinkedHashMap,
-            impact: [
-                state: impactState,
-                partial: impactPartial,
-                projectCount: impactedProjectKeys.size(),
-                projectKeys: impactedProjectKeys,
-                issues: impactedIssues
-            ] as LinkedHashMap,
+            impact: impactMap,
             footprint: [
                 detected: detected,
                 customFieldCount: customFields.size(),
@@ -1132,7 +1138,7 @@ class ImpactAnalyzer {
                 }
             }
             dimensions.add(new ImpactDimension(
-                "impactedProjects", "Project reach",
+                "impactedProjects", "Space reach",
                 app.impactedProjectKeys.size(), totalProjects, projectReachPartial))
             incomplete = incomplete || projectReachPartial
 
@@ -1887,6 +1893,7 @@ class PageExport {
     static String renderSummary(Map<String, Object> summary, Locale locale) {
         String associationState = str(summary, "associationState", Fp.BUDGET)
         String reachState = str(summary, "reachState", Fp.BUDGET)
+        Map<String, Object> impact = sub(summary, "impact")
 
         StringBuilder out = new StringBuilder()
         out.append("<h2>Key Figures</h2>")
@@ -1895,6 +1902,12 @@ class PageExport {
         out.append(metricRow("Disabled apps", numberOf(summary, "disabledApps", locale)))
         out.append(metricRow("Apps with a detectable footprint", numberOf(summary, "appsWithFootprint", locale)))
         out.append(metricRow("Decommission candidates", numberOf(summary, "decommissionCandidates", locale)))
+        out.append(metricRow("Critical / high impact apps",
+            numberOf(impact, "critical", locale) + " / " + numberOf(impact, "high", locale)))
+        out.append(metricRow("Medium / low impact apps",
+            numberOf(impact, "medium", locale) + " / " + numberOf(impact, "low", locale)))
+        out.append(metricRow("Review required / no detectable footprint",
+            numberOf(impact, "reviewRequired", locale) + " / " + numberOf(impact, "noDetectableFootprint", locale)))
         out.append(metricRow("App custom fields", numberOf(summary, "customFields", locale)))
         out.append(metricRow("Issue-field associations", usageText(associationState, Long.valueOf(lng(summary, "issueFieldAssociations")), locale)))
         out.append(metricRow("Screen placements", numberOf(summary, "screenPlacements", locale)))
@@ -1948,6 +1961,7 @@ class PageExport {
         out.append("<h2>Apps and Decisions</h2>")
         out.append("<table><tbody><tr>")
         out.append(head("App")).append(head(COL_KEY)).append(head("Vendor")).append(head("Version"))
+        out.append(head("Impact"))
         out.append(head("Enabled Modules")).append(head("Custom Fields")).append(head("Issue-Field Associations"))
         out.append(head("Screens / Unique")).append(head("Workflows / Active / References"))
         out.append(head("Projects Touched")).append(head("Issues In Reach"))
@@ -1996,6 +2010,7 @@ class PageExport {
             out.append(cell(Fp.html(pluginKey)))
             out.append(cell(Fp.html(str(app, "vendor", Fp.NA))))
             out.append(cell(Fp.html(str(app, "version", Fp.NA))))
+            out.append(cell(Fp.html(str(app, "impactLabel", str(app, "impactLevel", Fp.NA)))))
             out.append(cell(Fp.html(numberOf(app, "enabledModules", locale))))
             out.append(cell(Fp.html(numberOf(app, "customFields", locale))))
             out.append(cell(Fp.html(usageText(associationState, Long.valueOf(lng(app, "issueFieldAssociations")), locale))))
@@ -2872,6 +2887,12 @@ appFootprint(
 
     int appsWithFootprint = 0
     int disabledApps = 0
+    int criticalApps = 0
+    int highApps = 0
+    int mediumApps = 0
+    int lowApps = 0
+    int reviewApps = 0
+    int noFootprintApps = 0
     int totalCustomFields = 0
     long totalIssueFieldAssociations = 0L
     boolean issueTotalsPartial = false
@@ -2883,9 +2904,17 @@ appFootprint(
     List<AppFootprint> decommissionCandidates = new ArrayList<AppFootprint>()
 
     for (AppFootprint app : apps) {
+        ImpactAssessment impact = impacts.get(app.pluginKey)
+        if (impact.level == "CRITICAL") criticalApps++
+        else if (impact.level == "HIGH") highApps++
+        else if (impact.level == "MEDIUM") mediumApps++
+        else if (impact.level == "LOW") lowApps++
+        else if (impact.level == "REVIEW_REQUIRED") reviewApps++
+        else if (impact.level == "NO_DETECTABLE_FOOTPRINT") noFootprintApps++
+
         if (app.detected) {
             appsWithFootprint++
-        } else if (!app.systemProvided) {
+        } else if (!app.systemProvided && impact.level == "NO_DETECTABLE_FOOTPRINT") {
             decommissionCandidates.add(app)
         }
         allImpactedProjects.addAll(app.impactedProjectKeys)
@@ -2950,7 +2979,7 @@ appFootprint(
 
         List<Map<String, Object>> appMaps = new ArrayList<Map<String, Object>>()
         for (AppFootprint app : apps) {
-            appMaps.add(app.asMap(includeModules))
+            appMaps.add(app.asMap(includeModules, impacts.get(app.pluginKey)))
         }
 
         Map<String, Object> response = [
@@ -2965,6 +2994,14 @@ appFootprint(
                 apps: apps.size(),
                 disabledApps: disabledApps,
                 appsWithDetectedFootprint: appsWithFootprint,
+                impact: [
+                    critical: criticalApps,
+                    high: highApps,
+                    medium: mediumApps,
+                    low: lowApps,
+                    reviewRequired: reviewApps,
+                    noDetectableFootprint: noFootprintApps
+                ] as LinkedHashMap,
                 appCustomFields: totalCustomFields,
                 issueFieldAssociations: totalIssueFieldAssociations,
                 issueFieldAssociationsPartial: issueTotalsPartial,
@@ -3013,12 +3050,14 @@ appFootprint(
 
         StringBuilder csv = new StringBuilder()
         csv.append("pluginKey,displayName,descriptorName,vendor,version,enabled,state,systemProvided,")
+        csv.append("impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions,")
         csv.append("modules,enabledModules,customFields,issueFieldAssociations,issueCountsComplete,")
         csv.append("screenPlacements,uniqueScreens,workflows,activeWorkflows,workflowReferences,")
         csv.append("impactedProjects,impactedIssues,impactComplete,restModules,servletModules,")
         csv.append("detectedFootprint,diagnostics\n")
 
         for (AppFootprint app : apps) {
+            ImpactAssessment impact = impacts.get(app.pluginKey)
             csv.append(Fp.csv(app.pluginKey)).append(",")
             csv.append(Fp.csv(app.displayName)).append(",")
             csv.append(Fp.csv(app.descriptorName)).append(",")
@@ -3027,6 +3066,11 @@ appFootprint(
             csv.append(app.enabled).append(",")
             csv.append(Fp.csv(app.state)).append(",")
             csv.append(app.systemProvided).append(",")
+            csv.append(Fp.csv(impact.level)).append(",")
+            csv.append(Fp.csv(impact.maxPercent.toPlainString())).append(",")
+            csv.append(impact.partial).append(",")
+            csv.append(Fp.csv(String.join(" | ", impact.reasons))).append(",")
+            csv.append(Fp.csv(JsonOutput.toJson(impact.asMap().get("dimensions")))).append(",")
             csv.append(app.modules.size()).append(",")
             csv.append(app.enabledModuleCount).append(",")
             csv.append(app.customFields.size()).append(",")
@@ -3113,6 +3157,7 @@ appFootprint(
      * only not measured. The state per app travels with the figure. */
     List<Map<String, Object>> exportApps = new ArrayList<Map<String, Object>>()
     for (AppFootprint app : apps) {
+        ImpactAssessment impact = impacts.get(app.pluginKey)
         Map<String, Object> row = new LinkedHashMap<String, Object>()
         row.put("pluginKey", app.pluginKey)
         row.put("displayName", app.displayName)
@@ -3121,6 +3166,11 @@ appFootprint(
         row.put("enabled", Boolean.valueOf(app.enabled))
         row.put("systemProvided", Boolean.valueOf(app.systemProvided))
         row.put("state", app.state)
+        row.put("impactLevel", impact.level)
+        row.put("impactLabel", impact.label)
+        row.put("impactMaxPercent", impact.maxPercent)
+        row.put("impactPartial", Boolean.valueOf(impact.partial))
+        row.put("impactReasons", impact.reasons)
         row.put("detected", Boolean.valueOf(app.detected))
         row.put("enabledModules", Integer.valueOf(app.enabledModuleCount))
         row.put("categories", app.categoryCounts)
@@ -3145,6 +3195,14 @@ appFootprint(
     exportSummary.put("disabledApps", Integer.valueOf(disabledApps))
     exportSummary.put("appsWithFootprint", Integer.valueOf(appsWithFootprint))
     exportSummary.put("decommissionCandidates", Integer.valueOf(decommissionCandidates.size()))
+    Map<String, Object> exportImpact = new LinkedHashMap<String, Object>()
+    exportImpact.put("critical", Integer.valueOf(criticalApps))
+    exportImpact.put("high", Integer.valueOf(highApps))
+    exportImpact.put("medium", Integer.valueOf(mediumApps))
+    exportImpact.put("low", Integer.valueOf(lowApps))
+    exportImpact.put("reviewRequired", Integer.valueOf(reviewApps))
+    exportImpact.put("noDetectableFootprint", Integer.valueOf(noFootprintApps))
+    exportSummary.put("impact", exportImpact)
     exportSummary.put("customFields", Integer.valueOf(totalCustomFields))
     exportSummary.put("associationState", PageExport.summaryState(issueCounts, issueTotalsPartial))
     exportSummary.put("issueFieldAssociations", Long.valueOf(totalIssueFieldAssociations))
@@ -3204,6 +3262,9 @@ appFootprint(
     --yellow: #7f5f01;
     --yellow-soft: #fff7d6;
     --yellow-border: #f5cd47;
+    --orange: #974f0c;
+    --orange-soft: #fff3eb;
+    --orange-border: #fec195;
     --red: #ae2e24;
     --red-soft: #ffeceb;
     --red-border: #ffd5d2;
@@ -3298,8 +3359,10 @@ body {
 .export-empty { color: var(--text-subtle); font-size: 12px; font-style: italic; }
 
 /* toolbar */
+.legend { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 .toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
 .search { flex: 1; min-width: 260px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; background: var(--surface); }
+.toolbar select { height: 36px; padding: 0 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); }
 .checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-subtle); }
 
 /* app cards */
@@ -3316,6 +3379,13 @@ body {
 .badge-system { background: var(--purple-soft); color: var(--purple); border-color: var(--purple-border); }
 .badge-disabled { background: var(--yellow-soft); color: var(--yellow); border-color: var(--yellow-border); }
 .badge-diag { background: var(--red-soft); color: var(--red); border-color: var(--red-border); }
+.badge-critical { background: var(--red-soft); color: var(--red); border-color: var(--red-border); }
+.badge-high { background: var(--orange-soft); color: var(--orange); border-color: var(--orange-border); }
+.badge-medium { background: var(--yellow-soft); color: var(--yellow); border-color: var(--yellow-border); }
+.badge-low { background: var(--green-soft); color: var(--green); border-color: var(--green-border); }
+.badge-review { background: var(--purple-soft); color: var(--purple); border-color: var(--purple-border); }
+.badge-none { background: var(--surface-subtle); color: var(--text-subtle); border-color: var(--border); }
+.impact-reasons { margin: 9px 0 0; padding-left: 20px; color: var(--text-subtle); font-size: 12px; }
 
 /* metrics */
 .metrics { display: grid; grid-template-columns: repeat(8, 1fr); border-bottom: 1px solid var(--border-subtle); }
@@ -3560,9 +3630,27 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
 </div>
 """)
 
-    html.append("""<div class="toolbar">
+    html.append("""<div class="legend">
+    <span class="badge badge-critical">CRITICAL ${criticalApps}</span>
+    <span class="badge badge-high">HIGH ${highApps}</span>
+    <span class="badge badge-medium">MEDIUM ${mediumApps}</span>
+    <span class="badge badge-low">LOW ${lowApps}</span>
+    <span class="badge badge-review">REVIEW REQUIRED ${reviewApps}</span>
+    <span class="badge badge-none">NO DETECTABLE FOOTPRINT ${noFootprintApps}</span>
+</div>
+
+<div class="toolbar">
     <input id="appSearch" class="search" type="search"
            placeholder="Search app, vendor, plugin key or extension type..." oninput="filterApps()">
+    <select id="impactLevel" onchange="filterApps()">
+        <option value="">All impact levels</option>
+        <option value="CRITICAL">Critical</option>
+        <option value="HIGH">High</option>
+        <option value="MEDIUM">Medium</option>
+        <option value="LOW">Low</option>
+        <option value="REVIEW_REQUIRED">Review required</option>
+        <option value="NO_DETECTABLE_FOOTPRINT">No detectable footprint</option>
+    </select>
     <label class="checkbox-label">
         <input id="footprintOnly" type="checkbox" onchange="filterApps()">
         Detected footprint only
@@ -3602,6 +3690,13 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
     /* ---- App cards --------------------------------------------------------- */
 
     for (AppFootprint app : apps) {
+        ImpactAssessment impact = impacts.get(app.pluginKey)
+        String impactClass = "badge-none"
+        if (impact.level == "CRITICAL") impactClass = "badge-critical"
+        else if (impact.level == "HIGH") impactClass = "badge-high"
+        else if (impact.level == "MEDIUM") impactClass = "badge-medium"
+        else if (impact.level == "LOW") impactClass = "badge-low"
+        else if (impact.level == "REVIEW_REQUIRED") impactClass = "badge-review"
 
         StringBuilder searchText = new StringBuilder()
         searchText.append(app.displayName ?: "").append(" ")
@@ -3615,6 +3710,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         html.append("""<div class="app-card${app.enabled ? '' : ' is-disabled'}"
      data-search="${esc(searchText.toString().toLowerCase(Locale.ROOT))}"
      data-footprint="${app.detected}"
+     data-impact="${esc(impact.level)}"
      data-diagnostics="${app.diagnosticCount > 0}">
 
 <div class="app-header">
@@ -3626,6 +3722,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
             <div class="app-meta mono">${esc(app.pluginKey)}</div>
         </div>
         <div class="badges">
+            <span class="badge ${impactClass}">IMPACT: ${esc(impact.label.toUpperCase(Locale.ROOT))}</span>
             <span class="badge ${app.detected ? 'badge-footprint' : 'badge-capability'}">${app.detected ? 'DETECTED FOOTPRINT' : 'CAPABILITIES ONLY'}</span>
 """)
 
@@ -3641,6 +3738,12 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
 
         html.append("""        </div>
     </div>
+    <ul class="impact-reasons">
+""")
+        for (String reason : impact.reasons) {
+            html.append("        <li>" + esc(reason) + "</li>\n")
+        }
+        html.append("""    </ul>
 </div>
 
 <div class="metrics">
@@ -4030,14 +4133,16 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
 <script>
 function filterApps() {
     var query = document.getElementById('appSearch').value.trim().toLowerCase();
+    var impactLevel = document.getElementById('impactLevel').value;
     var footprintOnly = document.getElementById('footprintOnly').checked;
     var diagnosticsOnly = document.getElementById('diagnosticsOnly').checked;
     document.querySelectorAll('.app-card').forEach(function (card) {
         var text = card.dataset.search || '';
         var matchesSearch = query.length === 0 || text.includes(query);
+        var matchesImpact = impactLevel.length === 0 || card.dataset.impact === impactLevel;
         var matchesFootprint = !footprintOnly || card.dataset.footprint === 'true';
         var matchesDiagnostics = !diagnosticsOnly || card.dataset.diagnostics === 'true';
-        card.classList.toggle('hidden', !(matchesSearch && matchesFootprint && matchesDiagnostics));
+        card.classList.toggle('hidden', !(matchesSearch && matchesImpact && matchesFootprint && matchesDiagnostics));
     });
 }
 /* The export is staged: nothing above ran a lookup, so every stage below asks the
