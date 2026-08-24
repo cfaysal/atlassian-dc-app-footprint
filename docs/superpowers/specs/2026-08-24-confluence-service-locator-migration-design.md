@@ -71,3 +71,28 @@ required-component gate so an unavailable service cannot be mistaken for absent 
 6. Runtime verification on Confluence 10.2.10 / ScriptRunner 10 must exercise space
    selection, parent search, create, repeat update and decision preservation. Until that
    run is observed, service resolution on the target remains `UNKNOWN` rather than passed.
+
+## Remaining-warning addendum
+
+The first implementation removed the eight deprecated exact lookups but left two other
+deprecated APIs in the same endpoint. OP-960 also covers them:
+
+- Replace `SpaceManager.getAllSpaces()` in the staged space picker with the public plugin
+  API `com.atlassian.confluence.api.service.content.SpaceService.find()`.
+- Restrict its finder to API `SpaceStatus.CURRENT` and fetch every page with
+  `SimplePageRequest(start, limit)`. Advance `start` by the returned page size while
+  `PageResponse.hasMore()` is true; refuse the request if pagination claims more results
+  without advancing.
+- Replace the deprecated broad `SettingsManager` interface with its purpose-specific
+  super-interface `GlobalSettingsManager` at both settings reads.
+
+The API-space objects supply the same key and display name required by the picker. The
+report-wide current/archived key inventory stays on the non-deprecated
+`SpaceManager.getAllSpaceKeys(SpaceStatus)` calls, so its measurement contract does not
+change. The existing fail-closed behavior for an unavailable or empty space inventory is
+preserved, and no deprecated compatibility fallback or warning suppression is allowed.
+
+The exact Confluence 10.2.10 runtime JARs confirm the selected signatures and that the
+replacement types are not deprecated. Regression assertions must reject
+`getAllSpaces()`, `SettingsManager`, and deprecation suppression before the production
+source is changed.
