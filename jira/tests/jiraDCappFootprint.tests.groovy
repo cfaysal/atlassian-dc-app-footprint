@@ -99,8 +99,8 @@ Map<String, String> categoryCases = [
     "GadgetModuleDescriptor": "Reports / Dashboards",
     "ReportModuleDescriptor": "Reports / Dashboards",
     "ProjectPermissionModuleDescriptor": "Permissions / Security",
-    "ProjectRoleModuleDescriptor": "Project",
-    "IssueOperationModuleDescriptor": "Issue",
+    "ProjectRoleModuleDescriptor": "Space",
+    "IssueOperationModuleDescriptor": "Work Item",
     "ComponentImportModuleDescriptor": "Other",
     "SomethingElse": "Other"
 ]
@@ -195,6 +195,29 @@ check("short needle", Fp.countIn(mixedTokens, Fp.blob(mixedTokens), mixed, "aa")
 check("tokenSafe key", Fp.tokenSafe("com.onresolve.jira.groovy.groovyrunner"), true)
 check("tokenSafe colon", Fp.tokenSafe("com.foo:bar"), false)
 check("tokenSafe empty", Fp.tokenSafe(""), false)
+ok("null custom-field value is absent", !Fp.hasValue(null))
+ok("empty custom-field string is absent", !Fp.hasValue(""))
+ok("empty custom-field collection is absent", !Fp.hasValue(Collections.emptyList()))
+ok("numeric zero remains a custom-field value", Fp.hasValue(Integer.valueOf(0)))
+ok("boolean false remains a custom-field value", Fp.hasValue(Boolean.FALSE))
+ok("non-empty custom-field value is present", Fp.hasValue("value"))
+check("measured machine output keeps its value",
+    Fp.measuredValue(Fp.MEASURED, Long.valueOf(7L)), Long.valueOf(7L))
+check("disabled machine output does not invent zero",
+    Fp.measuredValue(Fp.DISABLED, Long.valueOf(0L)), null)
+check("partial machine output does not publish a lower bound as complete",
+    Fp.measuredValue("partial", Long.valueOf(3L)), null)
+check("failed machine output does not invent zero",
+    Fp.measuredValue(Fp.ERROR, Long.valueOf(0L)), null)
+
+AppFootprint failedAssociationOutput = new AppFootprint()
+failedAssociationOutput.customFields.add(new CustomFieldFootprint(
+    issuesWithValueState: Fp.ERROR, issueSplitState: Fp.ERROR))
+failedAssociationOutput.finish()
+check("failed aggregate association state remains an error",
+    PageExport.associationState(failedAssociationOutput, true), Fp.ERROR)
+check("failed aggregate split state remains an error",
+    PageExport.associationSplitState(failedAssociationOutput, true, true), Fp.ERROR)
 
 /* ---- 8. aggregation ------------------------------------------------------ */
 
@@ -220,6 +243,9 @@ CustomFieldFootprint measured = new CustomFieldFootprint()
 measured.name = "Measured"
 measured.issuesWithValue = 100L
 measured.issuesWithValueState = Fp.MEASURED
+measured.activeIssuesWithValue = 100L
+measured.archivedIssuesWithValue = 0L
+measured.issueSplitState = Fp.MEASURED
 ScreenPlacementInfo p1 = new ScreenPlacementInfo(screenId: 1L, tabId: 10L)
 ScreenPlacementInfo p2 = new ScreenPlacementInfo(screenId: 1L, tabId: 11L)
 ScreenPlacementInfo p3 = new ScreenPlacementInfo(screenId: 2L, tabId: 12L)
@@ -490,6 +516,90 @@ reach.finish()
 check("impact projects without count map", reach.impactedProjectKeys.size(), 4)
 check("impact issues null without count map", reach.impactedIssues, null)
 
+ProjectPartition partition = ProjectPartition.split(
+    ["ACTIVE", "ARCHIVED", "UNKNOWN", "ACTIVE"],
+    new HashSet<String>(["ACTIVE"]),
+    new HashSet<String>(["ARCHIVED"]))
+check("project partition keeps active keys", partition.activeKeys, ["ACTIVE"])
+check("project partition keeps archived keys", partition.archivedKeys, ["ARCHIVED"])
+check("project partition retains unknown keys", partition.unknownKeys, ["UNKNOWN"])
+ok("unknown project makes the partition partial", !partition.complete())
+
+check("known active inventory keeps measured detail state when archive is omitted",
+    Fp.partitionDisplayState(Fp.MEASURED, true), Fp.MEASURED)
+check("incomplete active inventory fails the detail state closed",
+    Fp.partitionDisplayState(Fp.MEASURED, false), Fp.ERROR)
+check("budgeted reach remains budgeted regardless of inventory",
+    Fp.partitionDisplayState(Fp.BUDGET, true), Fp.BUDGET)
+check("disabled Work Item count stays off",
+    Fp.countDisplayState(false, Fp.MEASURED, Long.valueOf(0L)), Fp.DISABLED)
+check("measured Work Item count needs a value",
+    Fp.countDisplayState(true, Fp.MEASURED, null), Fp.ERROR)
+check("measured Work Item zero remains measured",
+    Fp.countDisplayState(true, Fp.MEASURED, Long.valueOf(0L)), Fp.MEASURED)
+check("budgeted Work Item reach remains not measured",
+    Fp.countDisplayState(true, Fp.BUDGET, null), Fp.BUDGET)
+
+ProjectPartition completePartition = ProjectPartition.split(
+    ["ACTIVE", "ARCHIVED"],
+    new HashSet<String>(["ACTIVE"]),
+    new HashSet<String>(["ARCHIVED"]))
+ok("known active/archive partition is complete", completePartition.complete())
+
+CustomFieldFootprint splitField = new CustomFieldFootprint(
+    name: "Split field",
+    issuesWithValue: Long.valueOf(10L),
+    issuesWithValueState: Fp.MEASURED,
+    activeIssuesWithValue: Long.valueOf(7L),
+    archivedIssuesWithValue: Long.valueOf(3L),
+    issueSplitState: Fp.MEASURED,
+    reachState: Fp.MEASURED,
+    reachPartitionState: Fp.MEASURED)
+splitField.reachProjectKeys.addAll(["ACTIVE", "ARCHIVED"])
+splitField.activeReachProjectKeys.add("ACTIVE")
+splitField.archivedReachProjectKeys.add("ARCHIVED")
+
+WorkflowReference splitWorkflow = new WorkflowReference(
+    name: "Split workflow", references: 1, reachState: Fp.MEASURED,
+    reachPartitionState: Fp.MEASURED)
+splitWorkflow.projectKeys.addAll(["SECOND", "ARCHIVED"])
+splitWorkflow.activeProjectKeys.add("SECOND")
+splitWorkflow.archivedProjectKeys.add("ARCHIVED")
+
+AppFootprint splitApp = new AppFootprint()
+splitApp.customFields.add(splitField)
+splitApp.workflowReferences.add(splitWorkflow)
+splitApp.finish([ACTIVE: 5L, SECOND: 10L], [ARCHIVED: 20L])
+check("active field associations aggregate separately", splitApp.activeIssueFieldAssociations, 7L)
+check("archived field associations aggregate separately", splitApp.archivedIssueFieldAssociations, 3L)
+ok("complete field split stays complete", !splitApp.issueAssociationSplitPartial)
+check("active reach union is deduplicated", splitApp.activeImpactedProjectKeys, ["ACTIVE", "SECOND"])
+check("archived reach union is deduplicated", splitApp.archivedImpactedProjectKeys, ["ARCHIVED"])
+check("active reached issues counted once", splitApp.activeImpactedIssues, 15L)
+check("archived reached issues counted once", splitApp.archivedImpactedIssues, 20L)
+check("combined reach remains available for compatibility",
+    splitApp.impactedProjectKeys, ["ACTIVE", "ARCHIVED", "SECOND"])
+
+Map<String, Object> splitFieldMap = splitField.asMap()
+check("field JSON exposes active associations", splitFieldMap.get("activeIssuesWithValue"), 7L)
+check("field JSON exposes archived associations", splitFieldMap.get("archivedIssuesWithValue"), 3L)
+Map<String, Object> splitWorkflowMap = splitWorkflow.asMap()
+check("workflow JSON exposes active reach", splitWorkflowMap.get("activeProjectKeys"), ["SECOND"])
+check("workflow JSON exposes archived reach", splitWorkflowMap.get("archivedProjectKeys"), ["ARCHIVED"])
+
+IssueTotals validTotals = IssueTotals.split(Long.valueOf(100L), Long.valueOf(30L), true)
+check("issue total split derives active work items", validTotals.active, 70L)
+check("issue total split retains archived work items", validTotals.archived, 30L)
+check("valid issue total split is measured", validTotals.state, Fp.MEASURED)
+
+IssueTotals negativeTotals = IssueTotals.split(Long.valueOf(100L), Long.valueOf(110L), true)
+check("negative active issue total is rejected", negativeTotals.active, null)
+check("negative active issue total is incomplete", negativeTotals.state, Fp.ERROR)
+
+IssueTotals incompleteTotals = IssueTotals.split(Long.valueOf(100L), Long.valueOf(30L), false)
+check("incomplete archived count has no active denominator", incompleteTotals.active, null)
+check("incomplete archived count is not measured", incompleteTotals.state, Fp.ERROR)
+
 /* ---- 14. instance-relative impact policy -------------------------------- */
 
 List<List<Object>> impactBoundaryCases = [
@@ -556,12 +666,29 @@ check("impact map exposes maximum percentage",
 check("impact map exposes dimension evidence",
     ((List<Map<String, Object>>) relativeImpactMap.get("dimensions")).size(), 2)
 
+ImpactAssessment candidateZero = new ImpactAssessment(level: "NO_DETECTABLE_FOOTPRINT")
+ImpactAssessment candidateLegacy = new ImpactAssessment(level: "LEGACY_ONLY")
+ImpactAssessment candidateReview = new ImpactAssessment(level: "REVIEW_REQUIRED")
+ImpactAssessment candidateNotScanned = new ImpactAssessment(level: "NOT_SCANNED")
+ok("non-system measured zero is a decommission candidate",
+    ImpactPolicy.isDecommissionCandidate(false, candidateZero))
+ok("system app is never a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(true, candidateZero))
+ok("unknown system status is never a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(null, candidateZero))
+ok("legacy-only app is not a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(false, candidateLegacy))
+ok("review-required app is not a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(false, candidateReview))
+ok("not-scanned app is not a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(false, candidateNotScanned))
+
 ImpactAssessment assessedApp = ImpactAnalyzer.assessJira(
-    app, true, false, Long.valueOf(1000L), null,
+    app, true, false, true, Long.valueOf(1000L), null,
     Long.valueOf(100L), Long.valueOf(10L), false)
 check("Jira highest product dimension wins", assessedApp.level, "MEDIUM")
-ok("Jira product reasons expose issue association density",
-    assessedApp.reasons.any { String reason -> reason.contains("Issue-field association density") })
+ok("Jira product reasons expose Work Item association density",
+    assessedApp.reasons.any { String reason -> reason.contains("Work Item-field association density") })
 Map<String, Object> assessedAppMap = app.asMap(false, assessedApp)
 Map<String, Object> assessedImpactMap = (Map<String, Object>) assessedAppMap.get("impact")
 check("Jira JSON app map exposes impact level", assessedImpactMap.get("level"), "MEDIUM")
@@ -569,6 +696,44 @@ check("Jira JSON app map preserves raw reach state", assessedImpactMap.get("stat
 check("Jira JSON app map preserves raw reach uncertainty", assessedImpactMap.get("reachPartial"), false)
 ok("Jira JSON app map exposes impact dimensions",
     ((List<Map<String, Object>>) assessedImpactMap.get("dimensions")).size() >= 2)
+
+AppFootprint disabledMachineOutput = new AppFootprint()
+disabledMachineOutput.customFields.add(new CustomFieldFootprint(
+    issuesWithValueState: Fp.DISABLED, issueSplitState: Fp.DISABLED))
+disabledMachineOutput.finish()
+Map<String, Object> disabledMachineMap = disabledMachineOutput.asMap(
+    false, null, false, false)
+Map<String, Object> disabledMachineFootprint =
+    (Map<String, Object>) disabledMachineMap.get("footprint")
+check("disabled JSON association value is null",
+    disabledMachineFootprint.get("issueFieldAssociations"), null)
+check("disabled JSON association state is explicit",
+    disabledMachineFootprint.get("issueFieldAssociationsState"), Fp.DISABLED)
+check("disabled JSON split value is null",
+    disabledMachineFootprint.get("activeIssueFieldAssociations"), null)
+check("disabled JSON split state is explicit",
+    disabledMachineFootprint.get("issueAssociationSplitState"), Fp.DISABLED)
+
+AppFootprint partialMachineOutput = new AppFootprint()
+partialMachineOutput.customFields.add(new CustomFieldFootprint(
+    issuesWithValue: Long.valueOf(3L), issuesWithValueState: Fp.MEASURED,
+    activeIssuesWithValue: Long.valueOf(2L), archivedIssuesWithValue: Long.valueOf(1L),
+    issueSplitState: Fp.MEASURED))
+partialMachineOutput.customFields.add(new CustomFieldFootprint(
+    issuesWithValueState: Fp.BUDGET, issueSplitState: Fp.BUDGET))
+partialMachineOutput.finish()
+Map<String, Object> partialMachineMap = partialMachineOutput.asMap(
+    false, null, true, true)
+Map<String, Object> partialMachineFootprint =
+    (Map<String, Object>) partialMachineMap.get("footprint")
+check("partial JSON association lower bound is null",
+    partialMachineFootprint.get("issueFieldAssociations"), null)
+check("partial JSON association state is explicit",
+    partialMachineFootprint.get("issueFieldAssociationsState"), "partial")
+check("partial JSON split lower bound is null",
+    partialMachineFootprint.get("activeIssueFieldAssociations"), null)
+check("partial JSON split state is explicit",
+    partialMachineFootprint.get("issueAssociationSplitState"), "partial")
 
 AppFootprint broadSmallInstance = new AppFootprint()
 for (int index = 0; index < 8; index++) {
@@ -579,12 +744,12 @@ for (int index = 0; index < 8; index++) {
 }
 broadSmallInstance.finish()
 ImpactAssessment broadSmallImpact = ImpactAnalyzer.assessJira(
-    broadSmallInstance, false, false, null, null,
+    broadSmallInstance, false, false, true, null, null,
     Long.valueOf(10L), Long.valueOf(0L), false)
 check("eight of ten Jira custom fields is critical", broadSmallImpact.level, "CRITICAL")
 
 ImpactAssessment broadLargeImpact = ImpactAnalyzer.assessJira(
-    broadSmallInstance, false, false, null, null,
+    broadSmallInstance, false, false, true, null, null,
     Long.valueOf(1000L), Long.valueOf(0L), false)
 check("eight of one thousand Jira custom fields is low", broadLargeImpact.level, "LOW")
 
@@ -592,8 +757,9 @@ AppFootprint projectReachApp = new AppFootprint()
 projectReachApp.finish()
 projectReachApp.impactState = Fp.MEASURED
 projectReachApp.impactedProjectKeys.addAll(["A", "B", "C", "D", "E", "F", "G", "H"])
+projectReachApp.activeImpactedProjectKeys.addAll(["A", "B", "C", "D", "E", "F", "G", "H"])
 ImpactAssessment projectReachImpact = ImpactAnalyzer.assessJira(
-    projectReachApp, false, true, null, Long.valueOf(10L),
+    projectReachApp, false, true, true, null, Long.valueOf(10L),
     Long.valueOf(100L), Long.valueOf(10L), false)
 check("eight of ten Jira projects is critical", projectReachImpact.level, "CRITICAL")
 
@@ -601,22 +767,71 @@ AppFootprint partialZeroApp = new AppFootprint()
 partialZeroApp.workflowReferences.add(new WorkflowReference(name: "Unknown active state", active: null))
 partialZeroApp.finish()
 ImpactAssessment partialZeroAppImpact = ImpactAnalyzer.assessJira(
-    partialZeroApp, false, false, null, null,
+    partialZeroApp, false, false, true, null, null,
     Long.valueOf(100L), Long.valueOf(10L), false)
 check("partial Jira zero requires review", partialZeroAppImpact.level, "REVIEW_REQUIRED")
 
 ImpactAssessment emptyAppImpact = ImpactAnalyzer.assessJira(
-    empty, false, false, null, null,
+    empty, false, false, true, null, null,
     Long.valueOf(100L), Long.valueOf(10L), false)
 check("complete Jira zero is no detectable footprint",
     emptyAppImpact.level, "NO_DETECTABLE_FOOTPRINT")
 
 ImpactAssessment denominatorFailureImpact = ImpactAnalyzer.assessJira(
-    app, true, false, null, null,
+    app, true, false, true, null, null,
     Long.valueOf(100L), Long.valueOf(5L), true)
-check("failed Jira denominator keeps known high evidence",
-    denominatorFailureImpact.level, "HIGH")
+check("failed Jira denominator keeps known positive evidence",
+    denominatorFailureImpact.level, "LOW")
 ok("failed Jira denominator marks result partial", denominatorFailureImpact.partial)
+
+WorkflowReference archivedOnlyReference = new WorkflowReference(
+    name: "Archived only", references: 1, reachState: Fp.MEASURED,
+    reachPartitionState: Fp.MEASURED)
+archivedOnlyReference.projectKeys.add("ARCH")
+archivedOnlyReference.archivedProjectKeys.add("ARCH")
+AppFootprint archivedOnlyJiraApp = new AppFootprint()
+archivedOnlyJiraApp.workflowReferences.add(archivedOnlyReference)
+archivedOnlyJiraApp.finish(Collections.<String, Long>emptyMap(), [ARCH: 5L])
+ImpactAssessment archivedOnlyJiraImpact = ImpactAnalyzer.assessJira(
+    archivedOnlyJiraApp, false, true, true, null, Long.valueOf(10L),
+    Long.valueOf(100L), Long.valueOf(10L), false)
+check("archive-only Jira dependency is legacy only",
+    archivedOnlyJiraImpact.level, "LEGACY_ONLY")
+ok("archive-only reason names archived evidence",
+    archivedOnlyJiraImpact.reasons.any { String reason -> reason.contains("Archived") })
+
+ImpactAssessment disabledArchiveImpact = ImpactAnalyzer.assessJira(
+    empty, false, false, false, null, null,
+    Long.valueOf(100L), null, false)
+check("disabled Jira archive measurement cannot establish zero",
+    disabledArchiveImpact.level, "REVIEW_REQUIRED")
+
+WorkflowReference knownActivePartialReference = new WorkflowReference(
+    name: "Known active, archive omitted", references: 1, reachState: Fp.MEASURED,
+    reachPartitionState: Fp.DISABLED)
+knownActivePartialReference.projectKeys.add("ACTIVE")
+knownActivePartialReference.activeProjectKeys.add("ACTIVE")
+AppFootprint knownActivePartialApp = new AppFootprint()
+knownActivePartialApp.workflowReferences.add(knownActivePartialReference)
+knownActivePartialApp.finish([ACTIVE: 9L], null)
+check("known active Space survives an incomplete archive partition",
+    knownActivePartialApp.activeImpactedProjectKeys, ["ACTIVE"])
+check("known active Work Items survive an incomplete archive partition",
+    knownActivePartialApp.activeImpactedIssues, Long.valueOf(9L))
+ok("omitted archive remains explicit without degrading known active reach",
+    !knownActivePartialApp.activeImpactPartial && knownActivePartialApp.archivedImpactPartial)
+
+WorkflowReference budgetedArchiveReference = new WorkflowReference(
+    name: "Budgeted archive", references: 1, reachState: Fp.MEASURED,
+    reachPartitionState: Fp.BUDGET)
+AppFootprint budgetedArchiveApp = new AppFootprint()
+budgetedArchiveApp.workflowReferences.add(budgetedArchiveReference)
+budgetedArchiveApp.finish()
+ImpactAssessment budgetedArchiveImpact = ImpactAnalyzer.assessJira(
+    budgetedArchiveApp, false, true, true, null, Long.valueOf(10L),
+    Long.valueOf(100L), null, false)
+check("incomplete Jira archive partition requires review",
+    budgetedArchiveImpact.level, "REVIEW_REQUIRED")
 
 File endpointSource = new File("jira/jiraDCappFootprint.groovy")
 if (!endpointSource.isFile()) {
@@ -636,12 +851,149 @@ ok("Jira HTML app cards render impact reasons",
     endpointText.contains('<ul class="impact-reasons">'))
 ok("Jira CSV exports impact evidence",
     endpointText.contains("impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions"))
-ok("Jira decommission candidates require a complete measured zero",
-    endpointText.contains('else if (!app.systemProvided && impact.level == "NO_DETECTABLE_FOOTPRINT")'))
+ok("Jira decommission candidates use the shared guarded predicate",
+    endpointText.contains("ImpactPolicy.isDecommissionCandidate(app.systemProvided, impact)"))
+ok("Jira system metadata failures remain unknown",
+    endpointText.contains("app.systemProvided = null"))
+ok("Jira candidate copy describes the selected report population",
+    endpointText.contains("Included in this report, not system-provided"))
+ok("Jira candidate copy no longer claims every candidate is enabled",
+    !endpointText.contains("Enabled, not system-provided"))
+ok("Jira includeArchived defaults to true",
+    endpointText.contains('Fp.booleanParam(queryParams, "includeArchived", true)'))
+ok("Jira inventories archived Spaces explicitly",
+    endpointText.contains("getArchivedProjects()"))
+ok("Jira counts Work Items per archived Space",
+    endpointText.contains("issueManager.getIssueCountForProject(archivedProject.getId())"))
+ok("Jira streams archived Work Item ids",
+    endpointText.contains("issueManager.getIssueIdsForProject(archivedProject.getId())"))
+ok("Jira loads archived Work Items in bounded batches",
+    endpointText.contains("issueManager.getIssueObjects(issueIdBatch)"))
+ok("Jira rejects an incomplete archived Work Item batch",
+    endpointText.contains("archivedIssues.size() != issueIdBatch.size()"))
+ok("Jira reads app custom-field values from archived Work Items",
+    endpointText.contains("customField.getValue(issue)"))
+ok("Jira does not turn disabled Work Item counts into partial Space reach",
+    endpointText.contains("app.finish(issueCounts ? activeIssuesByProject : null,"))
+ok("Jira partitions reach through the complete Space inventories",
+    endpointText.contains("ProjectPartition.split("))
+ok("Jira marks an exhausted archived field scan as budgeted",
+    endpointText.contains("field.issueSplitState = Fp.BUDGET"))
+ok("Jira derives the workflow denominator from active Space reach",
+    endpointText.contains("totalActiveProjectWorkflows"))
+ok("Jira options expose includeArchived",
+    endpointText.contains("includeArchived: includeArchived"))
+ok("Jira HTML exposes the archived toggle",
+    endpointText.contains('>Archived</a>'))
+ok("Jira header names the active Space population",
+    endpointText.contains('${num(activeProjectIdByKey.size())} active Spaces'))
+ok("Jira header names the archived Space population",
+    endpointText.contains("num(archivedProjectIdByKey.size()) + ' archived Spaces'"))
+ok("Jira toolbar uses current Work Item terminology",
+    endpointText.contains('>Work Item counts</a>'))
+ok("Jira toolbar uses current Space terminology",
+    endpointText.contains('>Space reach</a>'))
+ok("Jira visible impact reasons use current Work Item terminology",
+    !endpointText.contains('"Issue-field association density"'))
+ok("Jira HTML renders the legacy-only counter",
+    endpointText.contains('<span class="badge badge-archived">LEGACY ONLY ${legacyOnlyApps}</span>'))
+ok("Jira HTML filters legacy-only assessments",
+    endpointText.contains('<option value="LEGACY_ONLY">Legacy only</option>'))
+ok("Jira JSON summary exports legacy-only assessments",
+    endpointText.contains("legacyOnly: legacyOnlyApps"))
+ok("Jira page-export summary exports legacy-only assessments",
+    endpointText.contains('exportImpact.put("legacyOnly", Integer.valueOf(legacyOnlyApps))'))
+ok("Jira CSV exports active and archived evidence",
+    endpointText.contains("activeIssueFieldAssociations,archivedIssueFieldAssociations") &&
+    endpointText.contains("activeImpactedSpaces,archivedImpactedSpaces"))
+ok("Jira CSV exports measurement states with nullable evidence",
+    endpointText.contains("associationState,issueSplitState") &&
+    endpointText.contains("activeReachState,archivedReachState"))
+ok("Jira JSON summary masks unavailable association values",
+    endpointText.contains("issueFieldAssociations: Fp.measuredValue(") &&
+    endpointText.contains("associationSummaryState, Long.valueOf(totalIssueFieldAssociations)"))
+ok("Jira JSON masks unavailable reach values",
+    endpointText.contains('impactMap.put("projectCount", Fp.measuredValue('))
+ok("Jira CSV masks unavailable values",
+    endpointText.contains("csv.append(Fp.csvMeasurement("))
 ok("Jira Confluence export carries the impact label",
     endpointText.contains('row.put("impactLabel", impact.label)'))
 ok("Jira Confluence export renders an Impact column",
     endpointText.contains('out.append(head("Impact"))'))
+
+Map<String, Object> archiveParitySummary = [
+    apps: 1, disabledApps: 0, appsWithFootprint: 1, decommissionCandidates: 0,
+    impact: [critical: 0, high: 0, medium: 0, low: 1, legacyOnly: 0,
+             reviewRequired: 0, noDetectableFootprint: 0],
+    customFields: 1,
+    activeAssociationState: Fp.MEASURED,
+    archivedAssociationState: Fp.MEASURED,
+    activeIssueFieldAssociations: 4L,
+    archivedIssueFieldAssociations: 3L,
+    screenPlacements: 0, workflowReferences: 1, workflowsScanned: 1, workflowsTotal: 1,
+    activeReachState: Fp.MEASURED,
+    archivedReachState: Fp.MEASURED,
+    activeImpactedSpaces: 2,
+    archivedImpactedSpaces: 1,
+    activeImpactedWorkItems: 11L,
+    archivedImpactedWorkItems: 7L,
+    customFieldsTotal: 10, customFieldsWithUnresolvedType: 0,
+    issueCountsSkippedByBudget: 0, readErrors: 0, observations: 0
+] as LinkedHashMap<String, Object>
+String archiveParitySummaryHtml = PageExport.renderSummary(archiveParitySummary, Locale.US)
+ok("Jira page-export summary labels active Work Item associations",
+    archiveParitySummaryHtml.contains("Work Item-field associations - active"))
+ok("Jira page-export summary labels archived Work Item associations",
+    archiveParitySummaryHtml.contains("Work Item-field associations - archived"))
+ok("Jira page-export summary labels active Space reach",
+    archiveParitySummaryHtml.contains("Spaces touched by an app - active"))
+ok("Jira page-export summary labels archived Work Item reach",
+    archiveParitySummaryHtml.contains("Work Items in the reach of an app - archived"))
+
+Map<String, Object> archiveParityAppRow = [
+    pluginKey: "example.app", displayName: "Example", vendor: "Vendor", version: "1",
+    enabled: true, state: "ENABLED", systemProvided: false, detected: true,
+    impactLevel: "LOW", impactLabel: "Low", enabledModules: 1, customFields: 1,
+    issueSplitState: Fp.MEASURED,
+    activeIssueFieldAssociations: 4L, archivedIssueFieldAssociations: 3L,
+    screenPlacements: 0, uniqueScreens: 0, workflows: 1, activeWorkflows: 1,
+    workflowReferences: 1,
+    activeReachState: Fp.MEASURED, archivedReachState: Fp.MEASURED,
+    activeImpactedSpaces: 2, archivedImpactedSpaces: 1,
+    activeImpactedWorkItems: 11L, archivedImpactedWorkItems: 7L,
+    diagnostics: 0
+] as LinkedHashMap<String, Object>
+String archiveParityAppsHtml = PageExport.renderApps(
+    [archiveParityAppRow], new DecisionRead(), new ExportOutcome(), Locale.US)
+ok("Jira page-export app table labels active/archive associations",
+    archiveParityAppsHtml.contains("Work Item Associations - Active / Archived"))
+ok("Jira page-export app table renders active/archive association values",
+    archiveParityAppsHtml.contains("4 / 3"))
+ok("Jira page-export app table labels active/archive Space reach",
+    archiveParityAppsHtml.contains("Spaces Touched - Active / Archived"))
+ok("Jira page-export app table labels active/archive Work Item reach",
+    archiveParityAppsHtml.contains("Work Items In Reach - Active / Archived"))
+ok("Jira app cards expose active Work Item associations",
+    endpointText.contains('num(app.activeIssueFieldAssociations)') &&
+    endpointText.contains('Work Item Associations &middot; Active'))
+ok("Jira app cards expose archived Work Item associations",
+    endpointText.contains('num(app.archivedIssueFieldAssociations)') &&
+    endpointText.contains('Work Item Associations &middot; Archived'))
+ok("Jira active summary uses the active reach completeness flag",
+    endpointText.contains('Spaces Touched · Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete)'))
+ok("Jira archived summary uses the archived reach completeness flag",
+    endpointText.contains('Spaces Touched · Archived${includeReach && includeArchived && (archivedReachTotalsPartial || archivedReachInventoryIncomplete)'))
+ok("Jira association summaries render off when the split is disabled",
+    endpointText.contains('${issueCounts && includeArchived ? num(totalActiveIssueFieldAssociations)') &&
+    endpointText.contains('${issueCounts && includeArchived ? num(totalArchivedIssueFieldAssociations)'))
+ok("Jira aggregate app association renders off when Work Item counts are disabled",
+    endpointText.contains('${issueCounts ? num(app.issueFieldAssociations)'))
+ok("Jira active reach card hides Work Item totals when counts are disabled",
+    endpointText.contains('${issueCounts && app.activeImpactedIssues != null ?'))
+ok("Jira archived reach card hides Work Item totals when counts are disabled",
+    endpointText.contains('${issueCounts && includeArchived && app.archivedImpactedIssues != null ?'))
+ok("Jira interpretation notes define active/archive separation",
+    endpointText.contains("Archived Spaces and Work Items are reported separately"))
 ok("Jira uses the shared 50 percent band",
     endpointText.contains('static final BigDecimal CRITICAL_PERCENT = new BigDecimal("50")'))
 ok("Jira uses the shared 20 percent band",

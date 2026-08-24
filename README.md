@@ -10,8 +10,8 @@ These scripts measure that difference.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.2 |
-| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.6 |
+| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.3 |
+| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.7 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
 building the removal-risk section of an audit report, or justifying to a budget owner
@@ -114,9 +114,10 @@ All parameters are optional and are appended as query parameters.
 | `includeDisabled` | `true`, `false` | `true` | Include installed but disabled apps. |
 | `includeDrafts` | `true`, `false` | `false` | Include draft workflows in the scan. |
 | `includeModules` | `true`, `false` | `false` | Emit the full module list per app. |
-| `includeReach` | `true`, `false` | `true` | Measure the spaces and work items reached through workflows and screens. |
-| `issueCounts` | `true`, `false` | `true` | Count issues per app-provided custom field. |
-| `issueBudgetMs` | milliseconds | `120000` | Time budget for issue counting. `0` means unlimited. Fields beyond the budget are reported as NOT MEASURED, never as zero. |
+| `includeArchived` | `true`, `false` | `true` | Measure archived Spaces and Work Items separately from current impact. |
+| `includeReach` | `true`, `false` | `true` | Measure the Spaces and Work Items reached through workflows and screens. |
+| `issueCounts` | `true`, `false` | `true` | Count Work Items per app-provided custom field. |
+| `issueBudgetMs` | milliseconds | `120000` | Time budget for Work Item counting, including the archived value split. `0` means unlimited. Fields beyond the budget are reported as NOT MEASURED, never as zero. |
 | `numbers` | `de`, `en` | `de` | Thousands separator style. |
 
 ### Confluence
@@ -186,9 +187,12 @@ were carried over.
 Read this before quoting a number to a customer.
 
 **Jira** measures configuration reach: extension modules per app, app-provided custom
-fields and the number of issues carrying a value in them, screen and screen-scheme
+fields and the number of Work Items carrying a value in them, screen and screen-scheme
 placements, and workflow references including post-functions, conditions and validators.
-Issue counting is the expensive part and is the reason `issueBudgetMs` exists.
+Active and archived Spaces and Work Items are measured separately. Archived-only evidence
+is `LEGACY_ONLY`, while an omitted or incomplete archive split is `REVIEW_REQUIRED` for an
+otherwise empty current footprint. Work Item counting is the expensive part and is the
+reason `issueBudgetMs` exists.
 
 **Confluence** measures content reach: extension modules per app, and actual macro usage
 counted from the search index. Two rules govern how that number is reported:
@@ -216,12 +220,13 @@ highest resulting share determines the app's level:
 | at least 5% | Medium |
 | greater than 0% | Low |
 
-Jira evaluates issue-field associations and reached work items against all work items,
-reached spaces against all active spaces, app-owned custom fields against all custom
-fields, and referenced active workflows against all active workflows. Confluence evaluates
+Jira evaluates active Work Item-field associations and reached Work Items against all
+active Work Items, reached active Spaces against all active Spaces, app-owned custom fields
+against all custom fields, and referenced workflows reaching active Spaces against the
+instance-wide active workflow reach. Confluence evaluates
 current unique content and current macro associations against all current pages and blog
-posts, plus current space reach against all current spaces. Archived Confluence content is
-kept separate as `LEGACY_ONLY` and never raises the current impact level.
+posts, plus current Space reach against all current Spaces. Archived evidence in both
+products is kept separate as `LEGACY_ONLY` and never raises the current impact level.
 
 The level is the maximum of the dimensions, not an average. Association ratios are capped
 at 100% for display because several associations can belong to one object. A partial
@@ -231,6 +236,15 @@ lower a known level. A partial zero becomes `REVIEW_REQUIRED`, while
 Confluence page export carry the resulting level and evidence. The Confluence HTML report
 also names the instance, Base URL, product version/build and active scan options in the
 same way as the Jira report.
+
+### Decommission candidates
+
+Both reports use the same fail-closed candidate rule. An app is listed only when it is in
+the selected report population, is not system-provided, and complete current and archived
+evidence classifies it as `NO_DETECTABLE_FOOTPRINT`. Disabled apps are eligible only when
+`includeDisabled=true` includes them in the report. `LEGACY_ONLY`, `REVIEW_REQUIRED`, and
+unmeasured results are never candidates. The list is a starting point for review, not an
+automatic uninstall recommendation.
 
 ## Performance
 

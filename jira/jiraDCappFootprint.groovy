@@ -49,13 +49,15 @@
  *   includeDisabled=true|false default true  installed but disabled apps
  *   includeDrafts=true|false  default false  draft workflows in the scan
  *   includeModules=true|false default false  full module list per app
+ *   includeArchived=true|false default true  separate archived Space and Work
+ *                                            Item evidence from current impact
  *   includeReach=true|false   default true   trace references through workflow
  *                                            schemes and screen schemes to the
- *                                            projects that actually use them
- *   issueCounts=true|false    default true   count issues per app custom field
- *                                            and per reached project
+ *                                            Spaces that actually use them
+ *   issueCounts=true|false    default true   count Work Items per app custom
+ *                                            field and per reached Space
  *   issueBudgetMs=<long>      default 120000 time budget for the expensive
- *                                            phases: issue counting AND the
+ *                                            phases: Work Item counting AND the
  *                                            screen scheme index behind
  *                                            includeReach. 0 = unlimited.
  *                                            Anything beyond the budget is
@@ -77,6 +79,7 @@ import com.atlassian.applinks.api.CredentialsRequiredException
 import com.atlassian.jira.component.ComponentAccessor
 import com.atlassian.jira.config.properties.ApplicationProperties
 import com.atlassian.jira.issue.CustomFieldManager
+import com.atlassian.jira.issue.Issue
 import com.atlassian.jira.issue.IssueManager
 import com.atlassian.jira.issue.fields.CustomField
 import com.atlassian.jira.issue.fields.screen.FieldScreen
@@ -89,6 +92,7 @@ import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenScheme
 import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenSchemeManager
 import com.atlassian.jira.issue.issuetype.IssueType
 import com.atlassian.jira.project.Project
+import com.atlassian.jira.project.ProjectManager
 import com.atlassian.jira.scheme.Scheme
 import com.atlassian.jira.security.JiraAuthenticationContext
 import com.atlassian.jira.util.BuildUtilsInfo
@@ -130,11 +134,12 @@ class Fp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "3.2"
+    static final String VERSION = "3.3"
 
     /* A needle can only occur inside a single token, so shorter tokens are
      * dropped. Needles below this length fall back to a raw scan. */
     static final int MIN_TOKEN = 4
+    static final int ARCHIVED_ISSUE_BATCH_SIZE = 200
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
@@ -142,6 +147,52 @@ class Fp {
     static final String ERROR = "error"
     static final String SKIPPED = "skipped"
     static final String NOT_EVALUATED = "notEvaluated"
+    static final String PARTIAL = "partial"
+
+    static boolean hasValue(Object value) {
+        if (value == null) {
+            return false
+        }
+        if (value instanceof CharSequence) {
+            return value.toString().length() > 0
+        }
+        if (value instanceof Collection) {
+            return !((Collection<?>) value).isEmpty()
+        }
+        if (value instanceof Map) {
+            return !((Map<?, ?>) value).isEmpty()
+        }
+        if (value.getClass().isArray()) {
+            return java.lang.reflect.Array.getLength(value) > 0
+        }
+        return true
+    }
+
+    static Object measuredValue(String state, Object value) {
+        return MEASURED.equals(state) ? value : null
+    }
+
+    static String csvMeasurement(String state, Number value) {
+        Object measured = measuredValue(state, value)
+        return measured == null ? "" : measured.toString()
+    }
+
+    static String partitionDisplayState(String reachState, boolean inventoryComplete) {
+        if (reachState != MEASURED) {
+            return reachState
+        }
+        return inventoryComplete ? MEASURED : ERROR
+    }
+
+    static String countDisplayState(boolean enabled, String sourceState, Number value) {
+        if (!enabled) {
+            return DISABLED
+        }
+        if (sourceState != MEASURED) {
+            return sourceState
+        }
+        return value == null ? ERROR : MEASURED
+    }
 
     /*
      * Descriptor markers whose modules expose an HTTP surface. Counted separately
@@ -483,8 +534,8 @@ class Fp {
         ["Jobs / Services", ["job", "scheduler", "service"]],
         ["Reports / Dashboards", ["gadget", "dashboard", "report"]],
         ["Permissions / Security", ["permission", "security"]],
-        ["Project", ["project"]],
-        ["Issue", ["issue"]]
+        ["Space", ["project"]],
+        ["Work Item", ["issue"]]
     ]
 
     static String extensionCategory(String descriptorName) {
@@ -578,6 +629,9 @@ class CustomFieldFootprint {
     /* null plus a state, never a silent zero */
     Long issuesWithValue
     String issuesWithValueState = Fp.DISABLED
+    Long activeIssuesWithValue
+    Long archivedIssuesWithValue
+    String issueSplitState = Fp.NOT_EVALUATED
 
     Integer contextCount
     Boolean allProjects
@@ -592,7 +646,11 @@ class CustomFieldFootprint {
 
     /* Projects that actually reach this field through a screen scheme */
     List<String> reachProjectKeys = new ArrayList<String>()
+    List<String> activeReachProjectKeys = new ArrayList<String>()
+    List<String> archivedReachProjectKeys = new ArrayList<String>()
+    List<String> unknownReachProjectKeys = new ArrayList<String>()
     String reachState = Fp.NOT_EVALUATED
+    String reachPartitionState = Fp.NOT_EVALUATED
 
     int getUniqueScreenCount() {
         Set<Long> ids = new HashSet<Long>()
@@ -616,6 +674,9 @@ class CustomFieldFootprint {
             typeKey: typeKey,
             issuesWithValue: issuesWithValue,
             issuesWithValueState: issuesWithValueState,
+            activeIssuesWithValue: activeIssuesWithValue,
+            archivedIssuesWithValue: archivedIssuesWithValue,
+            issueSplitState: issueSplitState,
             contextCount: contextCount,
             allProjects: allProjects,
             projectKeys: projectKeys,
@@ -625,7 +686,11 @@ class CustomFieldFootprint {
             uniqueScreenCount: getUniqueScreenCount(),
             screensMeasured: screensMeasured,
             reachProjectKeys: reachProjectKeys,
+            activeReachProjectKeys: activeReachProjectKeys,
+            archivedReachProjectKeys: archivedReachProjectKeys,
+            unknownReachProjectKeys: unknownReachProjectKeys,
             reachState: reachState,
+            reachPartitionState: reachPartitionState,
             screens: screens,
             diagnostics: diagnostics
         ] as LinkedHashMap
@@ -663,8 +728,14 @@ class WorkflowReference {
 
     /* Blast radius: which projects run through this workflow, and how many issues */
     List<String> projectKeys = new ArrayList<String>()
+    List<String> activeProjectKeys = new ArrayList<String>()
+    List<String> archivedProjectKeys = new ArrayList<String>()
+    List<String> unknownProjectKeys = new ArrayList<String>()
     Long issueCount
+    Long activeIssueCount
+    Long archivedIssueCount
     String reachState = Fp.NOT_EVALUATED
+    String reachPartitionState = Fp.NOT_EVALUATED
 
     Map<String, Object> asMap() {
         return [
@@ -676,9 +747,75 @@ class WorkflowReference {
             detection: detection,
             matchingModuleClasses: matchingModuleClasses,
             projectKeys: projectKeys,
+            activeProjectKeys: activeProjectKeys,
+            archivedProjectKeys: archivedProjectKeys,
+            unknownProjectKeys: unknownProjectKeys,
             issueCount: issueCount,
-            reachState: reachState
+            activeIssueCount: activeIssueCount,
+            archivedIssueCount: archivedIssueCount,
+            reachState: reachState,
+            reachPartitionState: reachPartitionState
         ] as LinkedHashMap
+    }
+}
+
+class ProjectPartition {
+    List<String> activeKeys = new ArrayList<String>()
+    List<String> archivedKeys = new ArrayList<String>()
+    List<String> unknownKeys = new ArrayList<String>()
+
+    static ProjectPartition split(Collection<String> projectKeys,
+                                  Set<String> activeInventory,
+                                  Set<String> archivedInventory) {
+        Set<String> active = new TreeSet<String>()
+        Set<String> archived = new TreeSet<String>()
+        Set<String> unknown = new TreeSet<String>()
+        if (projectKeys != null) {
+            for (String key : projectKeys) {
+                if (key == null) {
+                    continue
+                }
+                boolean isActive = activeInventory != null && activeInventory.contains(key)
+                boolean isArchived = archivedInventory != null && archivedInventory.contains(key)
+                if (isActive && !isArchived) {
+                    active.add(key)
+                } else if (isArchived && !isActive) {
+                    archived.add(key)
+                } else {
+                    unknown.add(key)
+                }
+            }
+        }
+        ProjectPartition result = new ProjectPartition()
+        result.activeKeys.addAll(active)
+        result.archivedKeys.addAll(archived)
+        result.unknownKeys.addAll(unknown)
+        return result
+    }
+
+    boolean complete() {
+        return unknownKeys.isEmpty()
+    }
+}
+
+class IssueTotals {
+    Long total
+    Long active
+    Long archived
+    String state = Fp.ERROR
+
+    static IssueTotals split(Long total, Long archived, boolean complete) {
+        IssueTotals result = new IssueTotals(total: total, archived: archived)
+        if (!complete || total == null || archived == null || archived.longValue() < 0L) {
+            return result
+        }
+        long active = total.longValue() - archived.longValue()
+        if (active < 0L) {
+            return result
+        }
+        result.active = Long.valueOf(active)
+        result.state = Fp.MEASURED
+        return result
     }
 }
 
@@ -690,6 +827,11 @@ class ImpactPolicy {
     static final BigDecimal CRITICAL_PERCENT = new BigDecimal("50")
     static final BigDecimal HIGH_PERCENT = new BigDecimal("20")
     static final BigDecimal MEDIUM_PERCENT = new BigDecimal("5")
+
+    static boolean isDecommissionCandidate(Boolean systemProvided, ImpactAssessment assessment) {
+        return Boolean.FALSE.equals(systemProvided) && assessment != null &&
+            "NO_DETECTABLE_FOOTPRINT".equals(assessment.level)
+    }
 
     static int rankFor(ImpactDimension dimension) {
         if (dimension == null || !dimension.available() || dimension.numerator <= 0L) {
@@ -870,7 +1012,7 @@ class AppFootprint {
     String vendorUrl
     String version
 
-    boolean systemProvided
+    Boolean systemProvided
     boolean enabled
     String state
 
@@ -885,10 +1027,16 @@ class AppFootprint {
     Map<String, Integer> moduleTypeCounts = new LinkedHashMap<String, Integer>()
     long issueFieldAssociations
     boolean issueFieldAssociationsPartial
+    long activeIssueFieldAssociations
+    long archivedIssueFieldAssociations
+    boolean issueAssociationSplitPartial
     int screenPlacements
     int uniqueScreens
     int workflowCount
     int activeWorkflowCount
+    int activeProjectWorkflowCount
+    int archivedProjectWorkflowCount
+    boolean workflowReachPartitionPartial
     int workflowReferenceCount
     int footprintSignals
     boolean detected
@@ -903,12 +1051,24 @@ class AppFootprint {
     Long impactedIssues
     String impactState = Fp.NOT_EVALUATED
     boolean impactPartial
+    List<String> activeImpactedProjectKeys = new ArrayList<String>()
+    List<String> archivedImpactedProjectKeys = new ArrayList<String>()
+    List<String> unknownImpactedProjectKeys = new ArrayList<String>()
+    Long activeImpactedIssues
+    Long archivedImpactedIssues
+    boolean activeImpactPartial
+    boolean archivedImpactPartial
 
     void finish() {
-        finish(null)
+        finish(null, null)
     }
 
     void finish(Map<String, Long> issuesByProject) {
+        finish(issuesByProject, null)
+    }
+
+    void finish(Map<String, Long> activeIssuesByProject,
+                Map<String, Long> archivedIssuesByProject) {
         enabledModuleCount = 0
         restModules = 0
         servletModules = 0
@@ -956,6 +1116,9 @@ class AppFootprint {
 
         issueFieldAssociations = 0L
         issueFieldAssociationsPartial = false
+        activeIssueFieldAssociations = 0L
+        archivedIssueFieldAssociations = 0L
+        issueAssociationSplitPartial = false
         screenPlacements = 0
         Set<Long> screenIds = new HashSet<Long>()
         diagnosticCount = diagnostics.size()
@@ -964,6 +1127,13 @@ class AppFootprint {
                 issueFieldAssociations += field.issuesWithValue.longValue()
             } else {
                 issueFieldAssociationsPartial = true
+            }
+            if (field.issueSplitState == Fp.MEASURED &&
+                field.activeIssuesWithValue != null && field.archivedIssuesWithValue != null) {
+                activeIssueFieldAssociations += field.activeIssuesWithValue.longValue()
+                archivedIssueFieldAssociations += field.archivedIssuesWithValue.longValue()
+            } else if (field.issuesWithValueState != Fp.DISABLED) {
+                issueAssociationSplitPartial = true
             }
             screenPlacements += field.screenPlacements.size()
             for (ScreenPlacementInfo placement : field.screenPlacements) {
@@ -977,10 +1147,27 @@ class AppFootprint {
 
         workflowCount = workflowReferences.size()
         activeWorkflowCount = 0
+        activeProjectWorkflowCount = 0
+        archivedProjectWorkflowCount = 0
+        workflowReachPartitionPartial = false
         workflowReferenceCount = 0
         for (WorkflowReference reference : workflowReferences) {
             if (reference.active == Boolean.TRUE) {
                 activeWorkflowCount++
+            }
+            if (!reference.activeProjectKeys.isEmpty()) {
+                activeProjectWorkflowCount++
+            }
+            if (!reference.archivedProjectKeys.isEmpty()) {
+                archivedProjectWorkflowCount++
+            }
+            if (reference.reachPartitionState == Fp.MEASURED) {
+                if (!reference.unknownProjectKeys.isEmpty()) {
+                    workflowReachPartitionPartial = true
+                }
+            } else if (reference.reachPartitionState != Fp.DISABLED &&
+                       reference.reachState != Fp.NOT_EVALUATED) {
+                workflowReachPartitionPartial = true
             }
             workflowReferenceCount += reference.references
         }
@@ -994,53 +1181,147 @@ class AppFootprint {
          * field and adding up would count the same project several times.
          */
         Set<String> impacted = new TreeSet<String>()
+        Set<String> activeImpacted = new TreeSet<String>()
+        Set<String> archivedImpacted = new TreeSet<String>()
+        Set<String> unknownImpacted = new TreeSet<String>()
         boolean anyMeasured = false
         impactPartial = false
+        activeImpactPartial = false
+        archivedImpactPartial = false
 
         for (WorkflowReference reference : workflowReferences) {
             if (reference.reachState == Fp.MEASURED) {
                 anyMeasured = true
                 impacted.addAll(reference.projectKeys)
+                if (reference.reachPartitionState == Fp.MEASURED) {
+                    activeImpacted.addAll(reference.activeProjectKeys)
+                    archivedImpacted.addAll(reference.archivedProjectKeys)
+                    unknownImpacted.addAll(reference.unknownProjectKeys)
+                    if (!reference.unknownProjectKeys.isEmpty()) {
+                        activeImpactPartial = true
+                        archivedImpactPartial = true
+                    }
+                } else if (reference.reachPartitionState == Fp.NOT_EVALUATED) {
+                    activeImpacted.addAll(reference.projectKeys)
+                } else if (reference.reachPartitionState == Fp.DISABLED) {
+                    activeImpacted.addAll(reference.activeProjectKeys)
+                    unknownImpacted.addAll(reference.unknownProjectKeys)
+                    archivedImpactPartial = true
+                } else {
+                    activeImpacted.addAll(reference.activeProjectKeys)
+                    archivedImpacted.addAll(reference.archivedProjectKeys)
+                    unknownImpacted.addAll(reference.unknownProjectKeys)
+                    activeImpactPartial = true
+                    archivedImpactPartial = true
+                }
             } else if (reference.reachState != Fp.NOT_EVALUATED) {
-                impactPartial = true
+                activeImpactPartial = true
+                archivedImpactPartial = true
             }
         }
         for (CustomFieldFootprint field : customFields) {
             if (field.reachState == Fp.MEASURED) {
                 anyMeasured = true
                 impacted.addAll(field.reachProjectKeys)
+                if (field.reachPartitionState == Fp.MEASURED) {
+                    activeImpacted.addAll(field.activeReachProjectKeys)
+                    archivedImpacted.addAll(field.archivedReachProjectKeys)
+                    unknownImpacted.addAll(field.unknownReachProjectKeys)
+                    if (!field.unknownReachProjectKeys.isEmpty()) {
+                        activeImpactPartial = true
+                        archivedImpactPartial = true
+                    }
+                } else if (field.reachPartitionState == Fp.NOT_EVALUATED) {
+                    activeImpacted.addAll(field.reachProjectKeys)
+                } else if (field.reachPartitionState == Fp.DISABLED) {
+                    activeImpacted.addAll(field.activeReachProjectKeys)
+                    unknownImpacted.addAll(field.unknownReachProjectKeys)
+                    archivedImpactPartial = true
+                } else {
+                    activeImpacted.addAll(field.activeReachProjectKeys)
+                    archivedImpacted.addAll(field.archivedReachProjectKeys)
+                    unknownImpacted.addAll(field.unknownReachProjectKeys)
+                    activeImpactPartial = true
+                    archivedImpactPartial = true
+                }
             } else if (field.reachState != Fp.NOT_EVALUATED) {
-                impactPartial = true
+                activeImpactPartial = true
+                archivedImpactPartial = true
             }
         }
 
+        impacted.addAll(activeImpacted)
+        impacted.addAll(archivedImpacted)
+        impacted.addAll(unknownImpacted)
         impactedProjectKeys = new ArrayList<String>(impacted)
+        activeImpactedProjectKeys = new ArrayList<String>(activeImpacted)
+        archivedImpactedProjectKeys = new ArrayList<String>(archivedImpacted)
+        unknownImpactedProjectKeys = new ArrayList<String>(unknownImpacted)
         impactedIssues = null
+        activeImpactedIssues = null
+        archivedImpactedIssues = null
 
-        if (!anyMeasured && !impactPartial) {
+        if (!anyMeasured && !activeImpactPartial && !archivedImpactPartial) {
             impactState = Fp.NOT_EVALUATED
         } else {
             impactState = Fp.MEASURED
-            if (issuesByProject != null) {
-                long total = 0L
-                for (String key : impacted) {
-                    Long count = issuesByProject.get(key)
+            if (activeIssuesByProject != null) {
+                long activeTotal = 0L
+                for (String key : activeImpacted) {
+                    Long count = activeIssuesByProject.get(key)
                     if (count == null) {
-                        impactPartial = true
+                        activeImpactPartial = true
                     } else {
-                        total += count.longValue()
+                        activeTotal += count.longValue()
                     }
                 }
-                impactedIssues = Long.valueOf(total)
+                activeImpactedIssues = Long.valueOf(activeTotal)
+            }
+            if (archivedIssuesByProject != null) {
+                long archivedTotal = 0L
+                for (String key : archivedImpacted) {
+                    Long count = archivedIssuesByProject.get(key)
+                    if (count == null) {
+                        archivedImpactPartial = true
+                    } else {
+                        archivedTotal += count.longValue()
+                    }
+                }
+                archivedImpactedIssues = Long.valueOf(archivedTotal)
+            }
+            if (activeImpactedIssues != null &&
+                (archivedImpacted.isEmpty() || archivedImpactedIssues != null)) {
+                long combined = activeImpactedIssues.longValue()
+                if (archivedImpactedIssues != null) {
+                    combined += archivedImpactedIssues.longValue()
+                }
+                impactedIssues = Long.valueOf(combined)
             }
         }
+        impactPartial = activeImpactPartial || archivedImpactPartial
+    }
+
+    boolean hasArchivedEvidence() {
+        return archivedIssueFieldAssociations > 0L ||
+            !archivedImpactedProjectKeys.isEmpty() ||
+            (archivedImpactedIssues != null && archivedImpactedIssues.longValue() > 0L) ||
+            archivedProjectWorkflowCount > 0
     }
 
     Map<String, Object> asMap(boolean includeModules) {
-        return asMap(includeModules, null)
+        return asMap(includeModules, null, true, true)
     }
 
     Map<String, Object> asMap(boolean includeModules, ImpactAssessment assessment) {
+        return asMap(includeModules, assessment, true, true)
+    }
+
+    Map<String, Object> asMap(
+        boolean includeModules,
+        ImpactAssessment assessment,
+        boolean issueCounts,
+        boolean includeArchived
+    ) {
         List<Map<String, Object>> fieldMaps = new ArrayList<Map<String, Object>>()
         for (CustomFieldFootprint field : customFields) {
             fieldMaps.add(field.asMap())
@@ -1057,6 +1338,23 @@ class AppFootprint {
         impactMap.put("projectCount", Integer.valueOf(impactedProjectKeys.size()))
         impactMap.put("projectKeys", impactedProjectKeys)
         impactMap.put("issues", impactedIssues)
+        impactMap.put("active", [
+            projectCount: activeImpactedProjectKeys.size(),
+            projectKeys: activeImpactedProjectKeys,
+            issues: activeImpactedIssues,
+            partial: activeImpactPartial
+        ] as LinkedHashMap)
+        impactMap.put("archived", [
+            projectCount: archivedImpactedProjectKeys.size(),
+            projectKeys: archivedImpactedProjectKeys,
+            issues: archivedImpactedIssues,
+            partial: archivedImpactPartial
+        ] as LinkedHashMap)
+        impactMap.put("unknownProjectKeys", unknownImpactedProjectKeys)
+
+        String associationState = PageExport.associationState(this, issueCounts)
+        String splitState = PageExport.associationSplitState(
+            this, issueCounts, includeArchived)
 
         Map<String, Object> result = [
             displayName: displayName,
@@ -1081,12 +1379,23 @@ class AppFootprint {
             footprint: [
                 detected: detected,
                 customFieldCount: customFields.size(),
-                issueFieldAssociations: issueFieldAssociations,
+                issueFieldAssociations: Fp.measuredValue(
+                    associationState, Long.valueOf(issueFieldAssociations)),
+                issueFieldAssociationsState: associationState,
                 issueFieldAssociationsPartial: issueFieldAssociationsPartial,
+                activeIssueFieldAssociations: Fp.measuredValue(
+                    splitState, Long.valueOf(activeIssueFieldAssociations)),
+                archivedIssueFieldAssociations: Fp.measuredValue(
+                    splitState, Long.valueOf(archivedIssueFieldAssociations)),
+                issueAssociationSplitState: splitState,
+                issueAssociationSplitPartial: issueAssociationSplitPartial,
                 screenPlacements: screenPlacements,
                 uniqueScreens: uniqueScreens,
                 workflowCount: workflowCount,
                 activeWorkflowCount: activeWorkflowCount,
+                activeProjectWorkflowCount: activeProjectWorkflowCount,
+                archivedProjectWorkflowCount: archivedProjectWorkflowCount,
+                workflowReachPartitionPartial: workflowReachPartitionPartial,
                 workflowReferences: workflowReferenceCount,
                 customFields: fieldMaps,
                 workflows: workflowMaps
@@ -1107,14 +1416,24 @@ class AppFootprint {
 
 class ImpactAnalyzer {
 
+    static ImpactAssessment special(String level, String label, int rank, String reason) {
+        ImpactAssessment result = new ImpactAssessment()
+        result.level = level
+        result.label = label
+        result.rank = rank
+        result.reasons.add(reason)
+        return result
+    }
+
     static ImpactAssessment assessJira(
         AppFootprint app,
         boolean issueCounts,
         boolean includeReach,
-        Long totalIssues,
-        Long totalProjects,
+        boolean archivedEvidenceRequested,
+        Long totalActiveIssues,
+        Long totalActiveProjects,
         Long totalCustomFields,
-        Long totalActiveWorkflows,
+        Long totalActiveProjectWorkflows,
         boolean inventoryIncomplete
     ) {
         List<ImpactDimension> dimensions = new ArrayList<ImpactDimension>()
@@ -1122,54 +1441,62 @@ class ImpactAnalyzer {
 
         if (issueCounts) {
             dimensions.add(new ImpactDimension(
-                "issueFieldAssociations", "Issue-field association density",
-                app.issueFieldAssociations, totalIssues, app.issueFieldAssociationsPartial))
-            incomplete = incomplete || app.issueFieldAssociationsPartial
+                "issueFieldAssociations", "Work Item-field association density",
+                app.activeIssueFieldAssociations, totalActiveIssues,
+                app.issueAssociationSplitPartial))
+            incomplete = incomplete || app.issueAssociationSplitPartial
         }
 
         if (includeReach) {
-            boolean projectReachPartial = false
-            for (WorkflowReference reference : app.workflowReferences) {
-                if (reference.reachState != Fp.MEASURED && reference.reachState != Fp.NOT_EVALUATED) {
-                    projectReachPartial = true
-                }
-            }
-            for (CustomFieldFootprint field : app.customFields) {
-                if (field.reachState != Fp.MEASURED && field.reachState != Fp.NOT_EVALUATED) {
-                    projectReachPartial = true
-                }
-            }
             dimensions.add(new ImpactDimension(
                 "impactedProjects", "Space reach",
-                app.impactedProjectKeys.size(), totalProjects, projectReachPartial))
-            incomplete = incomplete || projectReachPartial
+                app.activeImpactedProjectKeys.size(), totalActiveProjects,
+                app.activeImpactPartial))
+            incomplete = incomplete || app.activeImpactPartial
 
             if (issueCounts) {
-                long impactedIssueCount = app.impactedIssues == null ? 0L : app.impactedIssues.longValue()
+                long impactedIssueCount = app.activeImpactedIssues == null ?
+                    0L : app.activeImpactedIssues.longValue()
                 dimensions.add(new ImpactDimension(
-                    "impactedIssues", "Work item reach",
-                    impactedIssueCount, totalIssues, app.impactPartial))
-                incomplete = incomplete || app.impactPartial
+                    "impactedIssues", "Work Item reach",
+                    impactedIssueCount, totalActiveIssues, app.activeImpactPartial))
             }
+            dimensions.add(new ImpactDimension(
+                "activeWorkflows", "Active Space workflow reach",
+                app.activeProjectWorkflowCount, totalActiveProjectWorkflows,
+                app.workflowReachPartitionPartial))
+            incomplete = incomplete || app.workflowReachPartitionPartial
+        } else if (!app.workflowReferences.isEmpty()) {
+            incomplete = true
         }
 
         dimensions.add(new ImpactDimension(
             "customFields", "Custom field share",
             app.customFields.size(), totalCustomFields, false))
 
-        boolean activeWorkflowPartial = false
-        for (WorkflowReference reference : app.workflowReferences) {
-            if (reference.active == null) {
-                activeWorkflowPartial = true
-                break
-            }
-        }
-        dimensions.add(new ImpactDimension(
-            "activeWorkflows", "Active workflow reach",
-            app.activeWorkflowCount, totalActiveWorkflows, activeWorkflowPartial))
-        incomplete = incomplete || activeWorkflowPartial
+        ImpactAssessment current = ImpactPolicy.assess(dimensions, incomplete)
+        boolean archivedIncomplete = !archivedEvidenceRequested ||
+            (issueCounts && app.issueAssociationSplitPartial) ||
+            (includeReach && (app.archivedImpactPartial || app.workflowReachPartitionPartial)) ||
+            (!includeReach && !app.workflowReferences.isEmpty())
 
-        return ImpactPolicy.assess(dimensions, incomplete)
+        if (current.rank >= 4 || current.level == "REVIEW_REQUIRED") {
+            current.partial = current.partial || archivedIncomplete
+            return current
+        }
+        if (app.hasArchivedEvidence()) {
+            return special("LEGACY_ONLY", "Legacy only", 3,
+                "Archived Space or Work Item evidence exists, but no current footprint was detected.")
+        }
+        if (archivedIncomplete) {
+            ImpactAssessment review = special("REVIEW_REQUIRED", "Review required", 2,
+                "Archived evidence was not completely measured; a zero footprint is not established.")
+            review.partial = true
+            return review
+        }
+        current.reasons.clear()
+        current.reasons.add("Every complete current and archived footprint dimension is zero.")
+        return current
     }
 }
 
@@ -1254,7 +1581,7 @@ class PageExport {
     static final String COL_NOTES = "Notes"
 
     static final String NOT_APPLICABLE = "notApplicable"
-    static final String PARTIAL = "partial"
+    static final String PARTIAL = Fp.PARTIAL
     static final String DEFAULT_TITLE = "JIRA App Footprint - Executive Summary"
 
     static final int MAX_PAYLOAD_CHARS = 4000000
@@ -1769,15 +2096,68 @@ class PageExport {
             return Fp.MEASURED
         }
         int measured = 0
+        int failed = 0
+        int budgeted = 0
         for (CustomFieldFootprint field : app.customFields) {
             if (field.issuesWithValueState == Fp.MEASURED) {
                 measured++
+            } else if (field.issuesWithValueState == Fp.ERROR) {
+                failed++
+            } else if (field.issuesWithValueState == Fp.BUDGET) {
+                budgeted++
             }
         }
-        if (measured == 0) {
+        if (measured == app.customFields.size()) {
+            return Fp.MEASURED
+        }
+        if (measured > 0) {
+            return PARTIAL
+        }
+        if (failed > 0) {
+            return Fp.ERROR
+        }
+        if (budgeted > 0) {
             return Fp.BUDGET
         }
-        return measured == app.customFields.size() ? Fp.MEASURED : PARTIAL
+        return Fp.NOT_EVALUATED
+    }
+
+    static String associationSplitState(
+        AppFootprint app,
+        boolean issueCounts,
+        boolean includeArchived
+    ) {
+        if (!issueCounts || !includeArchived) {
+            return Fp.DISABLED
+        }
+        if (app.customFields.isEmpty()) {
+            return Fp.MEASURED
+        }
+        int measured = 0
+        int failed = 0
+        int budgeted = 0
+        for (CustomFieldFootprint field : app.customFields) {
+            if (field.issueSplitState == Fp.MEASURED) {
+                measured++
+            } else if (field.issueSplitState == Fp.ERROR) {
+                failed++
+            } else if (field.issueSplitState == Fp.BUDGET) {
+                budgeted++
+            }
+        }
+        if (measured == app.customFields.size()) {
+            return Fp.MEASURED
+        }
+        if (measured > 0) {
+            return PARTIAL
+        }
+        if (failed > 0) {
+            return Fp.ERROR
+        }
+        if (budgeted > 0) {
+            return Fp.BUDGET
+        }
+        return Fp.NOT_EVALUATED
     }
 
     /* Project reach already carries its own state in the model. NOT_EVALUATED
@@ -1895,6 +2275,10 @@ class PageExport {
     static String renderSummary(Map<String, Object> summary, Locale locale) {
         String associationState = str(summary, "associationState", Fp.BUDGET)
         String reachState = str(summary, "reachState", Fp.BUDGET)
+        String activeAssociationState = str(summary, "activeAssociationState", Fp.BUDGET)
+        String archivedAssociationState = str(summary, "archivedAssociationState", Fp.BUDGET)
+        String activeReachState = str(summary, "activeReachState", Fp.BUDGET)
+        String archivedReachState = str(summary, "archivedReachState", Fp.BUDGET)
         Map<String, Object> impact = sub(summary, "impact")
 
         StringBuilder out = new StringBuilder()
@@ -1908,15 +2292,22 @@ class PageExport {
             numberOf(impact, "critical", locale) + " / " + numberOf(impact, "high", locale)))
         out.append(metricRow("Medium / low impact apps",
             numberOf(impact, "medium", locale) + " / " + numberOf(impact, "low", locale)))
+        out.append(metricRow("Legacy-only apps", numberOf(impact, "legacyOnly", locale)))
         out.append(metricRow("Review required / no detectable footprint",
             numberOf(impact, "reviewRequired", locale) + " / " + numberOf(impact, "noDetectableFootprint", locale)))
         out.append(metricRow("App custom fields", numberOf(summary, "customFields", locale)))
-        out.append(metricRow("Issue-field associations", usageText(associationState, Long.valueOf(lng(summary, "issueFieldAssociations")), locale)))
+        out.append(metricRow("Work Item-field associations - all", usageText(associationState, Long.valueOf(lng(summary, "issueFieldAssociations")), locale)))
+        out.append(metricRow("Work Item-field associations - active", usageText(activeAssociationState, Long.valueOf(lng(summary, "activeIssueFieldAssociations")), locale)))
+        out.append(metricRow("Work Item-field associations - archived", usageText(archivedAssociationState, Long.valueOf(lng(summary, "archivedIssueFieldAssociations")), locale)))
         out.append(metricRow("Screen placements", numberOf(summary, "screenPlacements", locale)))
         out.append(metricRow("Workflow references", numberOf(summary, "workflowReferences", locale)))
         out.append(metricRow("Workflows scanned", numberOf(summary, "workflowsScanned", locale) + " of " + numberOf(summary, "workflowsTotal", locale)))
-        out.append(metricRow("Projects touched by an app", usageText(reachState, Long.valueOf(lng(summary, "impactedProjects")), locale)))
-        out.append(metricRow("Issues in the reach of an app", usageText(reachState, Long.valueOf(lng(summary, "impactedIssues")), locale)))
+        out.append(metricRow("Spaces touched by an app - all", usageText(reachState, Long.valueOf(lng(summary, "impactedProjects")), locale)))
+        out.append(metricRow("Work Items in the reach of an app - all", usageText(reachState, Long.valueOf(lng(summary, "impactedIssues")), locale)))
+        out.append(metricRow("Spaces touched by an app - active", usageText(activeReachState, Long.valueOf(lng(summary, "activeImpactedSpaces")), locale)))
+        out.append(metricRow("Work Items in the reach of an app - active", usageText(activeReachState, Long.valueOf(lng(summary, "activeImpactedWorkItems")), locale)))
+        out.append(metricRow("Spaces touched by an app - archived", usageText(archivedReachState, Long.valueOf(lng(summary, "archivedImpactedSpaces")), locale)))
+        out.append(metricRow("Work Items in the reach of an app - archived", usageText(archivedReachState, Long.valueOf(lng(summary, "archivedImpactedWorkItems")), locale)))
         out.append(metricRow("Custom fields in the instance", numberOf(summary, "customFieldsTotal", locale)))
         out.append(metricRow("Custom fields with an unresolved type", numberOf(summary, "customFieldsWithUnresolvedType", locale)))
         out.append(metricRow("Fields not counted by budget", numberOf(summary, "issueCountsSkippedByBudget", locale)))
@@ -1964,9 +2355,9 @@ class PageExport {
         out.append("<table><tbody><tr>")
         out.append(head("App")).append(head(COL_KEY)).append(head("Vendor")).append(head("Version"))
         out.append(head("Impact"))
-        out.append(head("Enabled Modules")).append(head("Custom Fields")).append(head("Issue-Field Associations"))
+        out.append(head("Enabled Modules")).append(head("Custom Fields")).append(head("Work Item Associations - Active / Archived"))
         out.append(head("Screens / Unique")).append(head("Workflows / Active / References"))
-        out.append(head("Projects Touched")).append(head("Issues In Reach"))
+        out.append(head("Spaces Touched - Active / Archived")).append(head("Work Items In Reach - Active / Archived"))
         out.append(head("Status")).append(head(COL_NOTES)).append(head(COL_DECISION))
         out.append("</tr>")
 
@@ -2004,8 +2395,9 @@ class PageExport {
                 notes.add("Suppressed read errors " + numberOf(app, "diagnostics", locale))
             }
 
-            String associationState = str(app, "associationState", Fp.BUDGET)
-            String reachState = str(app, "reachState", Fp.BUDGET)
+            String issueSplitState = str(app, "issueSplitState", Fp.BUDGET)
+            String activeReachState = str(app, "activeReachState", Fp.BUDGET)
+            String archivedReachState = str(app, "archivedReachState", Fp.BUDGET)
 
             out.append("<tr>")
             out.append(cell(Fp.html(str(app, "displayName", pluginKey))))
@@ -2015,13 +2407,18 @@ class PageExport {
             out.append(cell(Fp.html(str(app, "impactLabel", str(app, "impactLevel", Fp.NA)))))
             out.append(cell(Fp.html(numberOf(app, "enabledModules", locale))))
             out.append(cell(Fp.html(numberOf(app, "customFields", locale))))
-            out.append(cell(Fp.html(usageText(associationState, Long.valueOf(lng(app, "issueFieldAssociations")), locale))))
+            out.append(cell(Fp.html(
+                usageText(issueSplitState, Long.valueOf(lng(app, "activeIssueFieldAssociations")), locale) + " / " +
+                usageText(issueSplitState, Long.valueOf(lng(app, "archivedIssueFieldAssociations")), locale))))
             out.append(cell(Fp.html(numberOf(app, "screenPlacements", locale) + " / " + numberOf(app, "uniqueScreens", locale))))
             out.append(cell(Fp.html(numberOf(app, "workflows", locale) + " / " + numberOf(app, "activeWorkflows", locale) +
                 " / " + numberOf(app, "workflowReferences", locale))))
-            out.append(cell(Fp.html(usageText(reachState, Long.valueOf(lng(app, "impactedProjects")), locale))))
-            out.append(cell(Fp.html(app.get("impactedIssues") == null && reachState == Fp.MEASURED ?
-                "n/e" : usageText(reachState, Long.valueOf(lng(app, "impactedIssues")), locale))))
+            out.append(cell(Fp.html(
+                usageText(activeReachState, Long.valueOf(lng(app, "activeImpactedSpaces")), locale) + " / " +
+                usageText(archivedReachState, Long.valueOf(lng(app, "archivedImpactedSpaces")), locale))))
+            out.append(cell(Fp.html(
+                usageText(activeReachState, Long.valueOf(lng(app, "activeImpactedWorkItems")), locale) + " / " +
+                usageText(archivedReachState, Long.valueOf(lng(app, "archivedImpactedWorkItems")), locale))))
             out.append(cell(Fp.html(status)))
             out.append(cell(Fp.html(notes.isEmpty() ? Fp.NA : String.join(", ", notes))))
             /* A row that carries no decision is seeded with the grey lozenge, a
@@ -2064,14 +2461,16 @@ class PageExport {
         out.append("<li>").append(Fp.html("Everything except the " + COL_DECISION + " column is regenerated on each run. Edits to any other column are lost on the next run.")).append("</li>")
         out.append("<li>").append(Fp.html("The " + COL_DECISION + " column is keyed by " + COL_KEY + ". Write KEEP, REMOVE or free text; the cell is carried over verbatim.")).append("</li>")
         out.append("<li>").append(Fp.html("n/m means not measured and n/e means not evaluated. off means the dimension was switched off for this run. A trailing * marks a lower bound. None of them is a zero.")).append("</li>")
-        out.append("<li>").append(Fp.html("Issue-field associations are the sum of issues carrying a non-empty value in an app-owned custom field. That is not a unique issue count.")).append("</li>")
-        out.append("<li>").append(Fp.html("Projects Touched is the union of the projects an app reaches through workflow schemes and through screen schemes. " +
-            "Issues In Reach counts every issue in those projects, not issues that use the app: it is an upper bound on exposure, not a usage number.")).append("</li>")
+        out.append("<li>").append(Fp.html("Work Item-field associations are the sum of Work Items carrying a non-empty value in an app-owned custom field. That is not a unique Work Item count.")).append("</li>")
+        out.append("<li>").append(Fp.html("Spaces Touched is the union of the Spaces an app reaches through workflow schemes and through screen schemes. " +
+            "Work Items In Reach counts every Work Item in those Spaces, not Work Items that use the app: it is an upper bound on exposure, not a usage number.")).append("</li>")
+        out.append("<li>").append(Fp.html("Archived Spaces and Work Items are reported separately. A disabled or incomplete archive scan cannot establish a zero footprint and therefore requires review.")).append("</li>")
         out.append("<li>").append(Fp.html("An app without a detectable footprint can still be in daily use. UI-only, REST-only and runtime-only functionality leaves no configuration trace, and this report measures no requests and no clicks.")).append("</li>")
         out.append("<li>").append(Fp.html("Report options for this run: includeSystem=" + String.valueOf(flag(options, "includeSystem")) +
             ", includeDisabled=" + String.valueOf(flag(options, "includeDisabled")) +
             ", includeDrafts=" + String.valueOf(flag(options, "includeDrafts")) +
             ", includeModules=" + String.valueOf(flag(options, "includeModules")) +
+            ", includeArchived=" + String.valueOf(flag(options, "includeArchived")) +
             ", includeReach=" + String.valueOf(flag(options, "includeReach")) +
             ", issueCounts=" + String.valueOf(flag(options, "issueCounts")) +
             ", issueBudgetMs=" + numberOf(options, "issueBudgetMs", locale) + ".")).append("</li>")
@@ -2163,6 +2562,7 @@ appFootprint(
     boolean includeDisabled = Fp.booleanParam(queryParams, "includeDisabled", true)
     boolean includeDrafts = Fp.booleanParam(queryParams, "includeDrafts", false)
     boolean includeModules = Fp.booleanParam(queryParams, "includeModules", false)
+    boolean includeArchived = Fp.booleanParam(queryParams, "includeArchived", true)
     boolean issueCounts = Fp.booleanParam(queryParams, "issueCounts", true)
     boolean includeReach = Fp.booleanParam(queryParams, "includeReach", true)
     long issueBudgetMs = Fp.longParam(queryParams, "issueBudgetMs", 120000L)
@@ -2177,6 +2577,7 @@ appFootprint(
         includeDisabled: includeDisabled ? null : "false",
         includeDrafts: includeDrafts ? "true" : null,
         includeModules: includeModules ? "true" : null,
+        includeArchived: includeArchived ? null : "false",
         includeReach: includeReach ? null : "false",
         issueCounts: issueCounts ? null : "false",
         issueBudgetMs: issueBudgetMs == 120000L ? null : String.valueOf(issueBudgetMs),
@@ -2192,6 +2593,7 @@ appFootprint(
     FieldScreenSchemeManager fieldScreenSchemeManager = ComponentAccessor.getComponent(FieldScreenSchemeManager)
     IssueTypeScreenSchemeManager issueTypeScreenSchemeManager = ComponentAccessor.getComponent(IssueTypeScreenSchemeManager)
     IssueManager issueManager = ComponentAccessor.getIssueManager()
+    ProjectManager projectManager = ComponentAccessor.getProjectManager()
     WorkflowManager workflowManager = ComponentAccessor.getComponent(WorkflowManager)
     WorkflowSchemeManager workflowSchemeManager = ComponentAccessor.getComponent(WorkflowSchemeManager)
     JiraAuthenticationContext authenticationContext = ComponentAccessor.getJiraAuthenticationContext()
@@ -2343,7 +2745,8 @@ appFootprint(
      * --------------------------------------------------------------------- */
 
     Map<Long, Set<String>> projectsByScreen = new HashMap<Long, Set<String>>()
-    Map<String, Long> issuesByProject = new HashMap<String, Long>()
+    Map<String, Long> activeIssuesByProject = new HashMap<String, Long>()
+    Map<String, Long> archivedIssuesByProject = new HashMap<String, Long>()
     Map<String, Map<String, Object>> workflowReach = new HashMap<String, Map<String, Object>>()
     boolean screenReachAvailable = includeReach
     boolean screenReachTruncated = false
@@ -2410,50 +2813,104 @@ appFootprint(
         if (screenReachTruncated) {
             Fp.observe(globalDiagnostics, globalObservations, "screen scheme reach -> time budget exhausted after " +
                 screenSchemesWalked + " of " + screenSchemesTotal +
-                " screen schemes, project reach via screens is reported as not measured")
+                " screen schemes, Space reach via screens is reported as not measured")
         }
     }
 
-    /* Key to id, resolved once: the screen path knows only keys. */
-    Map<String, Long> projectIdByKey = new HashMap<String, Long>()
-    boolean projectInventoryComplete = true
-    if (includeReach) {
-        try {
-            for (Project project : ComponentAccessor.getProjectManager().getProjectObjects()) {
-                if (project != null && project.getKey() != null) {
-                    projectIdByKey.put(project.getKey(), project.getId())
-                }
+    /* Active and archived Space inventories are kept separate. A key that cannot
+     * be placed in exactly one inventory stays unknown and makes reach partial. */
+    Map<String, Long> activeProjectIdByKey = new HashMap<String, Long>()
+    Map<String, Long> archivedProjectIdByKey = new HashMap<String, Long>()
+    List<Project> archivedProjects = new ArrayList<Project>()
+    boolean activeProjectInventoryComplete = true
+    boolean archivedProjectInventoryComplete = true
+    try {
+        for (Project project : projectManager.getProjectObjects()) {
+            if (project != null && project.getKey() != null) {
+                activeProjectIdByKey.put(project.getKey(), project.getId())
             }
-        } catch (Exception error) {
-            projectInventoryComplete = false
-            Fp.note(globalDiagnostics, "project inventory", error)
         }
+    } catch (Exception error) {
+        activeProjectInventoryComplete = false
+        Fp.note(globalDiagnostics, "active Space inventory", error)
+    }
+    try {
+        for (Project archivedProject : projectManager.getArchivedProjects()) {
+            if (archivedProject != null && archivedProject.getKey() != null) {
+                archivedProjects.add(archivedProject)
+                archivedProjectIdByKey.put(archivedProject.getKey(), archivedProject.getId())
+            }
+        }
+    } catch (Exception error) {
+        archivedProjectInventoryComplete = false
+        Fp.note(globalDiagnostics, "archived Space inventory", error)
+    }
+    Set<String> overlappingProjectKeys = new HashSet<String>(activeProjectIdByKey.keySet())
+    overlappingProjectKeys.retainAll(archivedProjectIdByKey.keySet())
+    if (!overlappingProjectKeys.isEmpty()) {
+        activeProjectInventoryComplete = false
+        archivedProjectInventoryComplete = false
+        Fp.note(globalDiagnostics, "Space inventory partition",
+            new IllegalStateException("active and archived inventories overlap"))
     }
 
-    Long totalIssues = null
-    boolean issueInventoryComplete = true
+    Long globalIssueTotal = null
+    boolean globalIssueInventoryComplete = true
     if (issueCounts) {
         try {
-            totalIssues = Long.valueOf(issueManager.getIssueCount())
+            globalIssueTotal = Long.valueOf(issueManager.getIssueCount())
         } catch (Exception error) {
-            issueInventoryComplete = false
-            Fp.note(globalDiagnostics, "issue inventory", error)
+            globalIssueInventoryComplete = false
+            Fp.note(globalDiagnostics, "Work Item inventory", error)
         }
     }
+
+    long archivedIssueTotalValue = 0L
+    boolean archivedIssueInventoryComplete = includeArchived && archivedProjectInventoryComplete
+    if (issueCounts && includeArchived && archivedProjectInventoryComplete) {
+        for (Project archivedProject : archivedProjects) {
+            if (System.currentTimeMillis() > issueDeadline) {
+                archivedIssueInventoryComplete = false
+                Fp.observe(globalDiagnostics, globalObservations,
+                    "archived Work Item inventory -> time budget exhausted")
+                break
+            }
+            try {
+                Long count = Long.valueOf(issueManager.getIssueCountForProject(archivedProject.getId()))
+                archivedIssuesByProject.put(archivedProject.getKey(), count)
+                archivedIssueTotalValue += count.longValue()
+            } catch (Exception error) {
+                archivedIssueInventoryComplete = false
+                archivedIssuesByProject.put(archivedProject.getKey(), null)
+                Fp.note(globalDiagnostics, "Work Item count for archived Space " + archivedProject.getKey(), error)
+            }
+        }
+    }
+
+    IssueTotals issueTotals = issueCounts ? IssueTotals.split(
+        globalIssueTotal,
+        archivedIssueInventoryComplete ? Long.valueOf(archivedIssueTotalValue) : null,
+        globalIssueInventoryComplete && archivedIssueInventoryComplete) : new IssueTotals()
+    Long totalActiveIssues = issueTotals.active
+    boolean issueInventoryComplete = !issueCounts || issueTotals.state == Fp.MEASURED
 
     /* One count per project, shared across every app that reaches it. */
     def issuesForProject = { String projectKey, Long projectId ->
         if (projectKey == null) {
             return null
         }
+        boolean archivedProject = archivedProjectIdByKey.containsKey(projectKey)
+        Map<String, Long> issueCountsByProject = archivedProject ?
+            archivedIssuesByProject : activeIssuesByProject
         if (projectId == null) {
-            projectId = projectIdByKey.get(projectKey)
+            projectId = archivedProject ?
+                archivedProjectIdByKey.get(projectKey) : activeProjectIdByKey.get(projectKey)
         }
-        if (projectId == null) {
+        if (projectId == null || (archivedProject && !includeArchived)) {
             return null
         }
-        if (issuesByProject.containsKey(projectKey)) {
-            return issuesByProject.get(projectKey)
+        if (issueCountsByProject.containsKey(projectKey)) {
+            return issueCountsByProject.get(projectKey)
         }
         if (!issueCounts || System.currentTimeMillis() > issueDeadline) {
             return null
@@ -2462,10 +2919,25 @@ appFootprint(
         try {
             counted = Long.valueOf(issueManager.getIssueCountForProject(projectId))
         } catch (Exception error) {
-            Fp.note(globalDiagnostics, "issue count for project " + projectKey, error)
+            Fp.note(globalDiagnostics, "Work Item count for Space " + projectKey, error)
         }
-        issuesByProject.put(projectKey, counted)
+        issueCountsByProject.put(projectKey, counted)
         return counted
+    }
+
+    def sumIssues = { Collection<String> projectKeys, Map<String, Long> counts ->
+        if (!issueCounts || projectKeys == null || counts == null) {
+            return null
+        }
+        long total = 0L
+        for (String projectKey : projectKeys) {
+            Long count = counts.get(projectKey)
+            if (count == null) {
+                return null
+            }
+            total += count.longValue()
+        }
+        return Long.valueOf(total)
     }
 
     def reachForWorkflow = { WorkflowSnapshot snapshot ->
@@ -2536,6 +3008,8 @@ appFootprint(
     }
 
     List<AppFootprint> apps = new ArrayList<AppFootprint>()
+    Map<CustomFieldFootprint, CustomField> appCustomFieldSources =
+        new LinkedHashMap<CustomFieldFootprint, CustomField>()
     int issueCountsSkippedByBudget = 0
 
     for (Plugin plugin : candidatePlugins) {
@@ -2547,13 +3021,13 @@ appFootprint(
         app.displayName = Fp.resolvePluginName(plugin, i18n)
 
         try {
-            app.systemProvided = pluginMetadataManager.isSystemProvided(plugin)
+            app.systemProvided = Boolean.valueOf(pluginMetadataManager.isSystemProvided(plugin))
         } catch (Exception error) {
-            app.systemProvided = false
+            app.systemProvided = null
             Fp.note(app.diagnostics, "system-provided flag", error)
         }
 
-        if (app.systemProvided && !includeSystem) {
+        if (app.systemProvided == Boolean.TRUE && !includeSystem) {
             continue
         }
 
@@ -2668,13 +3142,17 @@ appFootprint(
                     field.issuesWithValue = customField.getIssuesWithValue()
                     field.issuesWithValueState = field.issuesWithValue == null ? Fp.ERROR : Fp.MEASURED
                     if (field.issuesWithValue == null) {
-                        Fp.note(field.diagnostics, "issue count", new IllegalStateException("API returned null"))
+                        Fp.note(field.diagnostics, "Work Item count", new IllegalStateException("API returned null"))
                     }
                 } catch (Exception error) {
                     field.issuesWithValueState = Fp.ERROR
-                    Fp.note(field.diagnostics, "issue count", error)
+                    Fp.note(field.diagnostics, "Work Item count", error)
                 }
             }
+            if (!issueCounts || !includeArchived) {
+                field.issueSplitState = Fp.DISABLED
+            }
+            appCustomFieldSources.put(field, customField)
 
             try {
                 field.contextCount = Integer.valueOf(customField.getConfigurationSchemes().size())
@@ -2687,7 +3165,7 @@ appFootprint(
                 field.allProjects = Boolean.valueOf(customField.isAllProjects())
             } catch (Exception error) {
                 field.allProjects = null
-                Fp.note(field.diagnostics, "project scope flag", error)
+                Fp.note(field.diagnostics, "Space scope flag", error)
             }
 
             if (field.allProjects == Boolean.FALSE) {
@@ -2699,7 +3177,7 @@ appFootprint(
                     }
                     Collections.sort(field.projectKeys)
                 } catch (Exception error) {
-                    Fp.note(field.diagnostics, "associated projects", error)
+                    Fp.note(field.diagnostics, "associated Spaces", error)
                 }
             }
 
@@ -2707,7 +3185,7 @@ appFootprint(
                 field.allIssueTypes = Boolean.valueOf(customField.isAllIssueTypes())
             } catch (Exception error) {
                 field.allIssueTypes = null
-                Fp.note(field.diagnostics, "issue type scope flag", error)
+                Fp.note(field.diagnostics, "Work Item type scope flag", error)
             }
 
             if (field.allIssueTypes == Boolean.FALSE) {
@@ -2719,7 +3197,7 @@ appFootprint(
                     }
                     Collections.sort(field.issueTypes)
                 } catch (Exception error) {
-                    Fp.note(field.diagnostics, "associated issue types", error)
+                    Fp.note(field.diagnostics, "associated Work Item types", error)
                 }
             }
 
@@ -2759,6 +3237,21 @@ appFootprint(
                     }
                     field.reachProjectKeys.addAll(reachProjects)
                     field.reachState = Fp.MEASURED
+                    ProjectPartition partition = ProjectPartition.split(
+                        reachProjects,
+                        activeProjectIdByKey.keySet(),
+                        archivedProjectIdByKey.keySet())
+                    field.activeReachProjectKeys.addAll(partition.activeKeys)
+                    field.archivedReachProjectKeys.addAll(partition.archivedKeys)
+                    field.unknownReachProjectKeys.addAll(partition.unknownKeys)
+                    if (!includeArchived) {
+                        field.reachPartitionState = Fp.DISABLED
+                    } else if (activeProjectInventoryComplete &&
+                               archivedProjectInventoryComplete && partition.complete()) {
+                        field.reachPartitionState = Fp.MEASURED
+                    } else {
+                        field.reachPartitionState = Fp.ERROR
+                    }
                     for (String reachKey : reachProjects) {
                         issuesForProject(reachKey, null)
                     }
@@ -2820,45 +3313,222 @@ appFootprint(
             reference.reachState = (String) reach.get("state")
             reference.projectKeys.addAll((List<String>) reach.get("projects"))
             reference.issueCount = (Long) reach.get("issues")
+            if (reference.reachState == Fp.MEASURED) {
+                ProjectPartition partition = ProjectPartition.split(
+                    reference.projectKeys,
+                    activeProjectIdByKey.keySet(),
+                    archivedProjectIdByKey.keySet())
+                reference.activeProjectKeys.addAll(partition.activeKeys)
+                reference.archivedProjectKeys.addAll(partition.archivedKeys)
+                reference.unknownProjectKeys.addAll(partition.unknownKeys)
+                if (!includeArchived) {
+                    reference.reachPartitionState = Fp.DISABLED
+                } else if (activeProjectInventoryComplete &&
+                           archivedProjectInventoryComplete && partition.complete()) {
+                    reference.reachPartitionState = Fp.MEASURED
+                } else {
+                    reference.reachPartitionState = Fp.ERROR
+                }
+                reference.activeIssueCount = sumIssues(
+                    reference.activeProjectKeys, activeIssuesByProject)
+                reference.archivedIssueCount = sumIssues(
+                    reference.archivedProjectKeys, archivedIssuesByProject)
+            }
 
             app.workflowReferences.add(reference)
         }
 
-        app.finish(issuesByProject)
         apps.add(app)
+    }
+
+    /* Split global custom-field value counts into active and archived Work Item
+     * evidence. Archived Work Items are loaded once in bounded batches and tested
+     * against every app-owned field. A shared failure or budget stop leaves every
+     * unfinished split explicitly incomplete. */
+    Map<CustomFieldFootprint, Long> archivedValuesByField =
+        new LinkedHashMap<CustomFieldFootprint, Long>()
+    Set<CustomFieldFootprint> failedFieldSplits = new HashSet<CustomFieldFootprint>()
+    for (CustomFieldFootprint field : appCustomFieldSources.keySet()) {
+        archivedValuesByField.put(field, Long.valueOf(0L))
+    }
+
+    String archivedFieldScanState = Fp.MEASURED
+    if (!issueCounts || !includeArchived) {
+        archivedFieldScanState = Fp.DISABLED
+    } else if (!archivedProjectInventoryComplete) {
+        archivedFieldScanState = Fp.ERROR
+    } else if (!appCustomFieldSources.isEmpty()) {
+        archivedProjectScan:
+        for (Project archivedProject : archivedProjects) {
+            if (System.currentTimeMillis() > issueDeadline) {
+                archivedFieldScanState = Fp.BUDGET
+                break
+            }
+            Collection<Long> archivedIssueIds
+            try {
+                archivedIssueIds = issueManager.getIssueIdsForProject(archivedProject.getId())
+            } catch (Exception error) {
+                archivedFieldScanState = Fp.ERROR
+                Fp.note(globalDiagnostics,
+                    "archived Work Item ids for Space " + archivedProject.getKey(), error)
+                break
+            }
+            if (archivedIssueIds == null) {
+                archivedFieldScanState = Fp.ERROR
+                Fp.note(globalDiagnostics,
+                    "archived Work Item ids for Space " + archivedProject.getKey(),
+                    new IllegalStateException("API returned null"))
+                break
+            }
+
+            Iterator<Long> issueIdIterator = archivedIssueIds.iterator()
+            while (issueIdIterator.hasNext()) {
+                if (System.currentTimeMillis() > issueDeadline) {
+                    archivedFieldScanState = Fp.BUDGET
+                    break archivedProjectScan
+                }
+                List<Long> issueIdBatch = new ArrayList<Long>(Fp.ARCHIVED_ISSUE_BATCH_SIZE)
+                while (issueIdIterator.hasNext() && issueIdBatch.size() < Fp.ARCHIVED_ISSUE_BATCH_SIZE) {
+                    issueIdBatch.add(issueIdIterator.next())
+                }
+
+                Collection<Issue> archivedIssues
+                try {
+                    archivedIssues = issueManager.getIssueObjects(issueIdBatch)
+                } catch (Exception error) {
+                    archivedFieldScanState = Fp.ERROR
+                    Fp.note(globalDiagnostics,
+                        "archived Work Items for Space " + archivedProject.getKey(), error)
+                    break archivedProjectScan
+                }
+                if (archivedIssues == null) {
+                    archivedFieldScanState = Fp.ERROR
+                    Fp.note(globalDiagnostics,
+                        "archived Work Items for Space " + archivedProject.getKey(),
+                        new IllegalStateException("API returned null"))
+                    break archivedProjectScan
+                }
+                if (archivedIssues.size() != issueIdBatch.size() || archivedIssues.contains(null)) {
+                    archivedFieldScanState = Fp.ERROR
+                    Fp.note(globalDiagnostics,
+                        "archived Work Items for Space " + archivedProject.getKey(),
+                        new IllegalStateException("API returned an incomplete Work Item batch"))
+                    break archivedProjectScan
+                }
+
+                for (Issue issue : archivedIssues) {
+                    for (Map.Entry<CustomFieldFootprint, CustomField> entry : appCustomFieldSources.entrySet()) {
+                        CustomFieldFootprint field = entry.getKey()
+                        if (failedFieldSplits.contains(field)) {
+                            continue
+                        }
+                        CustomField customField = entry.getValue()
+                        try {
+                            if (Fp.hasValue(customField.getValue(issue))) {
+                                Long current = archivedValuesByField.get(field)
+                                archivedValuesByField.put(field, Long.valueOf(current.longValue() + 1L))
+                            }
+                        } catch (Exception error) {
+                            failedFieldSplits.add(field)
+                            field.issueSplitState = Fp.ERROR
+                            Fp.note(field.diagnostics, "archived Work Item values", error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (archivedFieldScanState == Fp.BUDGET) {
+        Fp.observe(globalDiagnostics, globalObservations,
+            "archived custom-field values -> time budget exhausted")
+    }
+    for (CustomFieldFootprint field : appCustomFieldSources.keySet()) {
+        if (failedFieldSplits.contains(field)) {
+            continue
+        }
+        if (field.issuesWithValueState != Fp.MEASURED || field.issuesWithValue == null) {
+            field.issueSplitState = field.issuesWithValueState
+            continue
+        }
+        if (archivedFieldScanState == Fp.BUDGET) {
+            field.issueSplitState = Fp.BUDGET
+            issueCountsSkippedByBudget++
+            continue
+        }
+        if (archivedFieldScanState != Fp.MEASURED) {
+            field.issueSplitState = archivedFieldScanState
+            continue
+        }
+        Long archivedValueCount = archivedValuesByField.get(field)
+        long activeValueCount = field.issuesWithValue.longValue() - archivedValueCount.longValue()
+        if (activeValueCount < 0L) {
+            field.issueSplitState = Fp.ERROR
+            Fp.note(field.diagnostics, "active/archive Work Item value split",
+                new IllegalStateException("archived value count exceeds the global count"))
+            continue
+        }
+        field.activeIssuesWithValue = Long.valueOf(activeValueCount)
+        field.archivedIssuesWithValue = archivedValueCount
+        field.issueSplitState = Fp.MEASURED
+    }
+
+    for (AppFootprint app : apps) {
+        app.finish(issueCounts ? activeIssuesByProject : null,
+            issueCounts && includeArchived ? archivedIssuesByProject : null)
     }
 
     /* ---- Sort and summarise ------------------------------------------------ */
 
-    long activeWorkflowTotalValue = 0L
-    boolean activeWorkflowInventoryComplete = workflowInventoryComplete
+    long activeProjectWorkflowTotalValue = 0L
+    boolean activeProjectWorkflowInventoryComplete = includeReach && workflowInventoryComplete &&
+        activeProjectInventoryComplete && archivedProjectInventoryComplete
     boolean workflowDetectionComplete = workflowInventoryComplete
     for (WorkflowSnapshot snapshot : workflowSnapshots) {
-        if (snapshot.active == Boolean.TRUE) {
-            activeWorkflowTotalValue++
-        } else if (snapshot.active == null) {
-            activeWorkflowInventoryComplete = false
+        if (includeReach) {
+            Map<String, Object> reach = reachForWorkflow(snapshot)
+            if (reach.get("state") != Fp.MEASURED) {
+                activeProjectWorkflowInventoryComplete = false
+            } else {
+                ProjectPartition partition = ProjectPartition.split(
+                    (Collection<String>) reach.get("projects"),
+                    activeProjectIdByKey.keySet(),
+                    archivedProjectIdByKey.keySet())
+                if (!partition.complete()) {
+                    activeProjectWorkflowInventoryComplete = false
+                }
+                if (!partition.activeKeys.isEmpty()) {
+                    activeProjectWorkflowTotalValue++
+                }
+            }
         }
         if (!snapshot.diagnostics.isEmpty()) {
             workflowDetectionComplete = false
         }
     }
 
-    Long totalProjects = includeReach && projectInventoryComplete ?
-        Long.valueOf(projectIdByKey.size()) : null
+    Long totalActiveProjects = includeReach && activeProjectInventoryComplete ?
+        Long.valueOf(activeProjectIdByKey.size()) : null
     Long totalCustomFieldsForImpact = customFieldInventoryComplete ?
         Long.valueOf(allCustomFields.size()) : null
-    Long totalActiveWorkflows = activeWorkflowInventoryComplete ?
-        Long.valueOf(activeWorkflowTotalValue) : null
+    Long totalActiveProjectWorkflows = activeProjectWorkflowInventoryComplete ?
+        Long.valueOf(activeProjectWorkflowTotalValue) : null
+    boolean activeReachInventoryIncomplete = !activeProjectInventoryComplete ||
+        !workflowDetectionComplete || !screenReachAvailable || screenReachTruncated ||
+        !activeProjectWorkflowInventoryComplete
+    boolean archivedReachInventoryIncomplete = !archivedProjectInventoryComplete ||
+        !workflowDetectionComplete || !screenReachAvailable || screenReachTruncated
     boolean impactInventoryIncomplete = !customFieldInventoryComplete ||
         !workflowDetectionComplete || (issueCounts && !issueInventoryComplete) ||
-        (includeReach && (!projectInventoryComplete || !screenReachAvailable || screenReachTruncated))
+        (includeReach && activeReachInventoryIncomplete)
 
     Map<String, ImpactAssessment> impacts = new HashMap<String, ImpactAssessment>()
     for (AppFootprint app : apps) {
         impacts.put(app.pluginKey, ImpactAnalyzer.assessJira(
-            app, issueCounts, includeReach, totalIssues, totalProjects,
-            totalCustomFieldsForImpact, totalActiveWorkflows, impactInventoryIncomplete))
+            app, issueCounts, includeReach, includeArchived,
+            totalActiveIssues, totalActiveProjects,
+            totalCustomFieldsForImpact, totalActiveProjectWorkflows,
+            impactInventoryIncomplete))
     }
 
     apps.sort { AppFootprint a, AppFootprint b ->
@@ -2893,16 +3563,25 @@ appFootprint(
     int highApps = 0
     int mediumApps = 0
     int lowApps = 0
+    int legacyOnlyApps = 0
     int reviewApps = 0
     int noFootprintApps = 0
     int totalCustomFields = 0
     long totalIssueFieldAssociations = 0L
     boolean issueTotalsPartial = false
+    long totalActiveIssueFieldAssociations = 0L
+    long totalArchivedIssueFieldAssociations = 0L
+    boolean issueSplitTotalsPartial = false
     int totalScreenPlacements = 0
     int totalWorkflowReferences = 0
     int totalDiagnostics = globalDiagnostics.size()
     int totalObservations = globalObservations.size()
     Set<String> allImpactedProjects = new TreeSet<String>()
+    Set<String> allActiveImpactedSpaces = new TreeSet<String>()
+    Set<String> allArchivedImpactedSpaces = new TreeSet<String>()
+    Set<String> allUnknownImpactedSpaces = new TreeSet<String>()
+    boolean activeReachTotalsPartial = false
+    boolean archivedReachTotalsPartial = false
     List<AppFootprint> decommissionCandidates = new ArrayList<AppFootprint>()
 
     for (AppFootprint app : apps) {
@@ -2911,22 +3590,34 @@ appFootprint(
         else if (impact.level == "HIGH") highApps++
         else if (impact.level == "MEDIUM") mediumApps++
         else if (impact.level == "LOW") lowApps++
+        else if (impact.level == "LEGACY_ONLY") legacyOnlyApps++
         else if (impact.level == "REVIEW_REQUIRED") reviewApps++
         else if (impact.level == "NO_DETECTABLE_FOOTPRINT") noFootprintApps++
 
         if (app.detected) {
             appsWithFootprint++
-        } else if (!app.systemProvided && impact.level == "NO_DETECTABLE_FOOTPRINT") {
+        }
+        if (ImpactPolicy.isDecommissionCandidate(app.systemProvided, impact)) {
             decommissionCandidates.add(app)
         }
         allImpactedProjects.addAll(app.impactedProjectKeys)
+        allActiveImpactedSpaces.addAll(app.activeImpactedProjectKeys)
+        allArchivedImpactedSpaces.addAll(app.archivedImpactedProjectKeys)
+        allUnknownImpactedSpaces.addAll(app.unknownImpactedProjectKeys)
+        activeReachTotalsPartial = activeReachTotalsPartial || app.activeImpactPartial
+        archivedReachTotalsPartial = archivedReachTotalsPartial || app.archivedImpactPartial
         if (!app.enabled) {
             disabledApps++
         }
         totalCustomFields += app.customFields.size()
         totalIssueFieldAssociations += app.issueFieldAssociations
+        totalActiveIssueFieldAssociations += app.activeIssueFieldAssociations
+        totalArchivedIssueFieldAssociations += app.archivedIssueFieldAssociations
         if (app.issueFieldAssociationsPartial) {
             issueTotalsPartial = true
+        }
+        if (app.issueAssociationSplitPartial) {
+            issueSplitTotalsPartial = true
         }
         totalScreenPlacements += app.screenPlacements
         totalWorkflowReferences += app.workflowReferenceCount
@@ -2944,11 +3635,34 @@ appFootprint(
     long impactedIssuesTotal = 0L
     boolean impactedIssuesPartial = false
     for (String projectKey : allImpactedProjects) {
-        Long count = issuesByProject.get(projectKey)
+        Long count = activeIssuesByProject.get(projectKey)
+        if (count == null) {
+            count = archivedIssuesByProject.get(projectKey)
+        }
         if (count == null) {
             impactedIssuesPartial = true
         } else {
             impactedIssuesTotal += count.longValue()
+        }
+    }
+
+    long activeImpactedWorkItemsTotal = 0L
+    for (String projectKey : allActiveImpactedSpaces) {
+        Long count = activeIssuesByProject.get(projectKey)
+        if (count == null) {
+            activeReachTotalsPartial = true
+        } else {
+            activeImpactedWorkItemsTotal += count.longValue()
+        }
+    }
+
+    long archivedImpactedWorkItemsTotal = 0L
+    for (String projectKey : allArchivedImpactedSpaces) {
+        Long count = archivedIssuesByProject.get(projectKey)
+        if (count == null) {
+            archivedReachTotalsPartial = true
+        } else {
+            archivedImpactedWorkItemsTotal += count.longValue()
         }
     }
 
@@ -2967,11 +3681,22 @@ appFootprint(
         includeDisabled: includeDisabled,
         includeDrafts: includeDrafts,
         includeModules: includeModules,
+        includeArchived: includeArchived,
         includeReach: includeReach,
         issueCounts: issueCounts,
         issueBudgetMs: issueBudgetMs,
         numbers: numbers
     ] as LinkedHashMap
+
+    String associationSummaryState = PageExport.summaryState(issueCounts, issueTotalsPartial)
+    String associationSplitSummaryState = PageExport.summaryState(
+        issueCounts && includeArchived, issueSplitTotalsPartial)
+    String reachSummaryState = PageExport.summaryState(includeReach, impactedIssuesPartial)
+    String activeReachSummaryState = PageExport.summaryState(
+        includeReach, activeReachTotalsPartial || activeReachInventoryIncomplete)
+    String archivedReachSummaryState = PageExport.summaryState(
+        includeReach && includeArchived,
+        archivedReachTotalsPartial || archivedReachInventoryIncomplete)
 
     /* =========================================================================
      * JSON
@@ -2981,7 +3706,31 @@ appFootprint(
 
         List<Map<String, Object>> appMaps = new ArrayList<Map<String, Object>>()
         for (AppFootprint app : apps) {
-            appMaps.add(app.asMap(includeModules, impacts.get(app.pluginKey)))
+            Map<String, Object> appMap = app.asMap(
+                includeModules, impacts.get(app.pluginKey), issueCounts, includeArchived)
+            String reachState = PageExport.reachState(app, includeReach)
+            String activeReachState = PageExport.summaryState(
+                includeReach, app.activeImpactPartial || activeReachInventoryIncomplete)
+            String archivedReachState = PageExport.summaryState(
+                includeReach && includeArchived,
+                app.archivedImpactPartial || archivedReachInventoryIncomplete)
+            Map<String, Object> impactMap = (Map<String, Object>) appMap.get("impact")
+            impactMap.put("measurementState", reachState)
+            impactMap.put("projectCount", Fp.measuredValue(
+                reachState, Integer.valueOf(app.impactedProjectKeys.size())))
+            impactMap.put("issues", Fp.measuredValue(reachState, app.impactedIssues))
+            Map<String, Object> activeImpact = (Map<String, Object>) impactMap.get("active")
+            activeImpact.put("state", activeReachState)
+            activeImpact.put("projectCount", Fp.measuredValue(
+                activeReachState, Integer.valueOf(app.activeImpactedProjectKeys.size())))
+            activeImpact.put("issues", Fp.measuredValue(activeReachState, app.activeImpactedIssues))
+            Map<String, Object> archivedImpact = (Map<String, Object>) impactMap.get("archived")
+            archivedImpact.put("state", archivedReachState)
+            archivedImpact.put("projectCount", Fp.measuredValue(
+                archivedReachState, Integer.valueOf(app.archivedImpactedProjectKeys.size())))
+            archivedImpact.put("issues", Fp.measuredValue(
+                archivedReachState, app.archivedImpactedIssues))
+            appMaps.add(appMap)
         }
 
         Map<String, Object> response = [
@@ -3001,18 +3750,46 @@ appFootprint(
                     high: highApps,
                     medium: mediumApps,
                     low: lowApps,
+                    legacyOnly: legacyOnlyApps,
                     reviewRequired: reviewApps,
                     noDetectableFootprint: noFootprintApps
                 ] as LinkedHashMap,
                 appCustomFields: totalCustomFields,
-                issueFieldAssociations: totalIssueFieldAssociations,
+                associationState: associationSummaryState,
+                issueFieldAssociations: Fp.measuredValue(
+                    associationSummaryState, Long.valueOf(totalIssueFieldAssociations)),
                 issueFieldAssociationsPartial: issueTotalsPartial,
+                activeAssociationState: associationSplitSummaryState,
+                archivedAssociationState: associationSplitSummaryState,
+                activeIssueFieldAssociations: Fp.measuredValue(
+                    associationSplitSummaryState, Long.valueOf(totalActiveIssueFieldAssociations)),
+                archivedIssueFieldAssociations: Fp.measuredValue(
+                    associationSplitSummaryState, Long.valueOf(totalArchivedIssueFieldAssociations)),
+                issueAssociationSplitPartial: issueSplitTotalsPartial,
                 issueCountsSkippedByBudget: issueCountsSkippedByBudget,
                 screenPlacements: totalScreenPlacements,
                 workflowReferences: totalWorkflowReferences,
-                impactedProjects: allImpactedProjects.size(),
+                reachState: reachSummaryState,
+                impactedProjects: Fp.measuredValue(
+                    reachSummaryState, Integer.valueOf(allImpactedProjects.size())),
                 impactedProjectKeys: new ArrayList<String>(allImpactedProjects),
-                impactedIssues: impactedIssuesPartial && impactedIssuesTotal == 0L ? null : impactedIssuesTotal,
+                activeReachState: activeReachSummaryState,
+                activeImpactedSpaces: Fp.measuredValue(
+                    activeReachSummaryState, Integer.valueOf(allActiveImpactedSpaces.size())),
+                activeImpactedSpaceKeys: new ArrayList<String>(allActiveImpactedSpaces),
+                archivedReachState: archivedReachSummaryState,
+                archivedImpactedSpaces: Fp.measuredValue(
+                    archivedReachSummaryState, Integer.valueOf(allArchivedImpactedSpaces.size())),
+                archivedImpactedSpaceKeys: new ArrayList<String>(allArchivedImpactedSpaces),
+                unknownImpactedSpaceKeys: new ArrayList<String>(allUnknownImpactedSpaces),
+                activeImpactedWorkItems: Fp.measuredValue(
+                    activeReachSummaryState, Long.valueOf(activeImpactedWorkItemsTotal)),
+                activeReachPartial: activeReachTotalsPartial || activeReachInventoryIncomplete,
+                archivedImpactedWorkItems: Fp.measuredValue(
+                    archivedReachSummaryState, Long.valueOf(archivedImpactedWorkItemsTotal)),
+                archivedReachPartial: archivedReachTotalsPartial || archivedReachInventoryIncomplete,
+                impactedIssues: Fp.measuredValue(
+                    reachSummaryState, Long.valueOf(impactedIssuesTotal)),
                 impactedIssuesPartial: impactedIssuesPartial,
                 decommissionCandidates: decommissionCandidates.size(),
                 workflowsScanned: scannableWorkflows.size(),
@@ -3053,13 +3830,22 @@ appFootprint(
         StringBuilder csv = new StringBuilder()
         csv.append("pluginKey,displayName,descriptorName,vendor,version,enabled,state,systemProvided,")
         csv.append("impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions,")
-        csv.append("modules,enabledModules,customFields,issueFieldAssociations,issueCountsComplete,")
+        csv.append("modules,enabledModules,customFields,issueFieldAssociations,activeIssueFieldAssociations,archivedIssueFieldAssociations,associationState,issueSplitState,issueCountsComplete,issueSplitComplete,")
         csv.append("screenPlacements,uniqueScreens,workflows,activeWorkflows,workflowReferences,")
-        csv.append("impactedProjects,impactedIssues,impactComplete,restModules,servletModules,")
+        csv.append("impactedProjects,impactedIssues,activeImpactedSpaces,archivedImpactedSpaces,unknownImpactedSpaces,activeImpactedWorkItems,archivedImpactedWorkItems,reachState,activeReachState,archivedReachState,impactComplete,restModules,servletModules,")
         csv.append("detectedFootprint,diagnostics\n")
 
         for (AppFootprint app : apps) {
             ImpactAssessment impact = impacts.get(app.pluginKey)
+            String associationState = PageExport.associationState(app, issueCounts)
+            String splitState = PageExport.associationSplitState(
+                app, issueCounts, includeArchived)
+            String reachState = PageExport.reachState(app, includeReach)
+            String activeReachState = PageExport.summaryState(
+                includeReach, app.activeImpactPartial || activeReachInventoryIncomplete)
+            String archivedReachState = PageExport.summaryState(
+                includeReach && includeArchived,
+                app.archivedImpactPartial || archivedReachInventoryIncomplete)
             csv.append(Fp.csv(app.pluginKey)).append(",")
             csv.append(Fp.csv(app.displayName)).append(",")
             csv.append(Fp.csv(app.descriptorName)).append(",")
@@ -3067,7 +3853,7 @@ appFootprint(
             csv.append(Fp.csv(app.version)).append(",")
             csv.append(app.enabled).append(",")
             csv.append(Fp.csv(app.state)).append(",")
-            csv.append(app.systemProvided).append(",")
+            csv.append(app.systemProvided == null ? "" : app.systemProvided.toString()).append(",")
             csv.append(Fp.csv(impact.level)).append(",")
             csv.append(Fp.csv(impact.maxPercent.toPlainString())).append(",")
             csv.append(impact.partial).append(",")
@@ -3076,16 +3862,36 @@ appFootprint(
             csv.append(app.modules.size()).append(",")
             csv.append(app.enabledModuleCount).append(",")
             csv.append(app.customFields.size()).append(",")
-            csv.append(app.issueFieldAssociations).append(",")
-            csv.append(!app.issueFieldAssociationsPartial).append(",")
+            csv.append(Fp.csvMeasurement(
+                associationState, Long.valueOf(app.issueFieldAssociations))).append(",")
+            csv.append(Fp.csvMeasurement(
+                splitState, Long.valueOf(app.activeIssueFieldAssociations))).append(",")
+            csv.append(Fp.csvMeasurement(
+                splitState, Long.valueOf(app.archivedIssueFieldAssociations))).append(",")
+            csv.append(associationState).append(",")
+            csv.append(splitState).append(",")
+            csv.append(associationState == Fp.MEASURED).append(",")
+            csv.append(splitState == Fp.MEASURED).append(",")
             csv.append(app.screenPlacements).append(",")
             csv.append(app.uniqueScreens).append(",")
             csv.append(app.workflowCount).append(",")
             csv.append(app.activeWorkflowCount).append(",")
             csv.append(app.workflowReferenceCount).append(",")
-            csv.append(app.impactedProjectKeys.size()).append(",")
-            csv.append(app.impactedIssues == null ? "" : app.impactedIssues).append(",")
-            csv.append(app.impactState == Fp.MEASURED && !app.impactPartial).append(",")
+            csv.append(Fp.csvMeasurement(
+                reachState, Integer.valueOf(app.impactedProjectKeys.size()))).append(",")
+            csv.append(Fp.csvMeasurement(reachState, app.impactedIssues)).append(",")
+            csv.append(Fp.csvMeasurement(
+                activeReachState, Integer.valueOf(app.activeImpactedProjectKeys.size()))).append(",")
+            csv.append(Fp.csvMeasurement(
+                archivedReachState, Integer.valueOf(app.archivedImpactedProjectKeys.size()))).append(",")
+            csv.append(Fp.csvMeasurement(
+                reachState, Integer.valueOf(app.unknownImpactedProjectKeys.size()))).append(",")
+            csv.append(Fp.csvMeasurement(activeReachState, app.activeImpactedIssues)).append(",")
+            csv.append(Fp.csvMeasurement(archivedReachState, app.archivedImpactedIssues)).append(",")
+            csv.append(reachState).append(",")
+            csv.append(activeReachState).append(",")
+            csv.append(archivedReachState).append(",")
+            csv.append(reachState == Fp.MEASURED).append(",")
             csv.append(app.restModules).append(",")
             csv.append(app.servletModules).append(",")
             csv.append(app.detected).append(",")
@@ -3107,34 +3913,40 @@ appFootprint(
     def num = { Number value -> Fp.number(value, numberLocale) }
     def lnk = { Map overrides -> Fp.html(Fp.link(activeParams, overrides)) }
 
-    def issueCell = { CustomFieldFootprint field ->
-        if (field.issuesWithValueState == Fp.MEASURED) {
-            return Fp.html(Fp.number(field.issuesWithValue, numberLocale))
+    def issueSplitCell = { CustomFieldFootprint field, boolean archived ->
+        if (field.issueSplitState == Fp.MEASURED) {
+            Long value = archived ? field.archivedIssuesWithValue : field.activeIssuesWithValue
+            return Fp.html(Fp.number(value, numberLocale))
         }
-        if (field.issuesWithValueState == Fp.DISABLED) {
-            return "<span class=\"muted\" title=\"issueCounts=false\">off</span>"
+        if (field.issueSplitState == Fp.DISABLED) {
+            return "<span class=\"muted\" title=\"Archive split disabled\">off</span>"
         }
-        if (field.issuesWithValueState == Fp.BUDGET) {
-            return "<span class=\"warn\" title=\"Time budget exhausted before this field was counted\">n/m</span>"
+        if (field.issueSplitState == Fp.BUDGET) {
+            return "<span class=\"warn\" title=\"Time budget exhausted before the archive split completed\">n/m</span>"
         }
-        return "<span class=\"bad\" title=\"Read failed, see diagnostics\">err</span>"
+        return "<span class=\"bad\" title=\"Archive split failed, see diagnostics\">err</span>"
     }
 
-    def impactCell = { AppFootprint entry ->
-        if (entry.impactState == Fp.NOT_EVALUATED) {
-            return "<span class=\"muted\" title=\"Project reach not evaluated\">n/e</span>"
+    def countCell = { Number value, String state ->
+        if (state == Fp.MEASURED) {
+            return Fp.html(Fp.number(value, numberLocale))
         }
-        String value = Fp.html(Fp.number(entry.impactedProjectKeys.size(), numberLocale))
-        if (entry.impactPartial) {
-            value = value + "<span class=\"warn\" title=\"At least one path could not be measured, this is a lower bound\">&#42;</span>"
+        if (state == Fp.DISABLED) {
+            return "<span class=\"muted\">off</span>"
         }
-        return value
+        if (state == Fp.NOT_EVALUATED) {
+            return "<span class=\"muted\">n/e</span>"
+        }
+        if (state == Fp.BUDGET) {
+            return "<span class=\"warn\">n/m</span>"
+        }
+        return "<span class=\"bad\" title=\"Read failed, see diagnostics\">err</span>"
     }
 
     /* Project list for a table cell, capped so one field cannot flood the page */
     def projectsCell = { List<String> keys, String state ->
         if (state == Fp.NOT_EVALUATED) {
-            return "<span class=\"muted\" title=\"Project reach not evaluated\">n/e</span>"
+            return "<span class=\"muted\" title=\"Space reach not evaluated\">n/e</span>"
         }
         if (state == Fp.BUDGET) {
             return "<span class=\"warn\" title=\"Time budget exhausted before the screen scheme index was complete\">n/m</span>"
@@ -3166,7 +3978,7 @@ appFootprint(
         row.put("vendor", app.vendor)
         row.put("version", app.version)
         row.put("enabled", Boolean.valueOf(app.enabled))
-        row.put("systemProvided", Boolean.valueOf(app.systemProvided))
+        row.put("systemProvided", app.systemProvided)
         row.put("state", app.state)
         row.put("impactLevel", impact.level)
         row.put("impactLabel", impact.label)
@@ -3180,6 +3992,10 @@ appFootprint(
         row.put("customFields", Integer.valueOf(app.customFields.size()))
         row.put("associationState", PageExport.associationState(app, issueCounts))
         row.put("issueFieldAssociations", Long.valueOf(app.issueFieldAssociations))
+        row.put("activeIssueFieldAssociations", Long.valueOf(app.activeIssueFieldAssociations))
+        row.put("archivedIssueFieldAssociations", Long.valueOf(app.archivedIssueFieldAssociations))
+        row.put("issueSplitState", PageExport.associationSplitState(
+            app, issueCounts, includeArchived))
         row.put("screenPlacements", Integer.valueOf(app.screenPlacements))
         row.put("uniqueScreens", Integer.valueOf(app.uniqueScreens))
         row.put("workflows", Integer.valueOf(app.workflowCount))
@@ -3188,6 +4004,15 @@ appFootprint(
         row.put("reachState", PageExport.reachState(app, includeReach))
         row.put("impactedProjects", Integer.valueOf(app.impactedProjectKeys.size()))
         row.put("impactedIssues", app.impactedIssues)
+        row.put("activeImpactedSpaces", Integer.valueOf(app.activeImpactedProjectKeys.size()))
+        row.put("archivedImpactedSpaces", Integer.valueOf(app.archivedImpactedProjectKeys.size()))
+        row.put("activeImpactedWorkItems", app.activeImpactedIssues)
+        row.put("archivedImpactedWorkItems", app.archivedImpactedIssues)
+        row.put("activeReachState", PageExport.summaryState(
+            includeReach, app.activeImpactPartial || activeReachInventoryIncomplete))
+        row.put("archivedReachState", PageExport.summaryState(
+            includeReach && includeArchived,
+            app.archivedImpactPartial || archivedReachInventoryIncomplete))
         row.put("diagnostics", Integer.valueOf(app.diagnosticCount))
         exportApps.add(row)
     }
@@ -3202,19 +4027,30 @@ appFootprint(
     exportImpact.put("high", Integer.valueOf(highApps))
     exportImpact.put("medium", Integer.valueOf(mediumApps))
     exportImpact.put("low", Integer.valueOf(lowApps))
+    exportImpact.put("legacyOnly", Integer.valueOf(legacyOnlyApps))
     exportImpact.put("reviewRequired", Integer.valueOf(reviewApps))
     exportImpact.put("noDetectableFootprint", Integer.valueOf(noFootprintApps))
     exportSummary.put("impact", exportImpact)
     exportSummary.put("customFields", Integer.valueOf(totalCustomFields))
-    exportSummary.put("associationState", PageExport.summaryState(issueCounts, issueTotalsPartial))
+    exportSummary.put("associationState", associationSummaryState)
     exportSummary.put("issueFieldAssociations", Long.valueOf(totalIssueFieldAssociations))
+    exportSummary.put("activeIssueFieldAssociations", Long.valueOf(totalActiveIssueFieldAssociations))
+    exportSummary.put("archivedIssueFieldAssociations", Long.valueOf(totalArchivedIssueFieldAssociations))
+    exportSummary.put("activeAssociationState", associationSplitSummaryState)
+    exportSummary.put("archivedAssociationState", associationSplitSummaryState)
     exportSummary.put("screenPlacements", Integer.valueOf(totalScreenPlacements))
     exportSummary.put("workflowReferences", Integer.valueOf(totalWorkflowReferences))
     exportSummary.put("workflowsScanned", Integer.valueOf(scannableWorkflows.size()))
     exportSummary.put("workflowsTotal", Integer.valueOf(workflowSnapshots.size()))
-    exportSummary.put("reachState", PageExport.summaryState(includeReach, impactedIssuesPartial))
+    exportSummary.put("reachState", reachSummaryState)
     exportSummary.put("impactedProjects", Integer.valueOf(allImpactedProjects.size()))
     exportSummary.put("impactedIssues", Long.valueOf(impactedIssuesTotal))
+    exportSummary.put("activeImpactedSpaces", Integer.valueOf(allActiveImpactedSpaces.size()))
+    exportSummary.put("archivedImpactedSpaces", Integer.valueOf(allArchivedImpactedSpaces.size()))
+    exportSummary.put("activeImpactedWorkItems", Long.valueOf(activeImpactedWorkItemsTotal))
+    exportSummary.put("archivedImpactedWorkItems", Long.valueOf(archivedImpactedWorkItemsTotal))
+    exportSummary.put("activeReachState", activeReachSummaryState)
+    exportSummary.put("archivedReachState", archivedReachSummaryState)
     exportSummary.put("customFieldsTotal", Integer.valueOf(allCustomFields.size()))
     exportSummary.put("customFieldsWithUnresolvedType", Integer.valueOf(unresolvedTypeFields))
     exportSummary.put("issueCountsSkippedByBudget", Integer.valueOf(issueCountsSkippedByBudget))
@@ -3313,7 +4149,7 @@ body {
 .button.on { background: var(--blue-soft); border-color: var(--blue); color: var(--blue); }
 
 /* summary */
-.summary-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; margin-bottom: 16px; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; box-shadow: var(--shadow); }
 .summary-value { font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
 .summary-label { color: var(--text-subtle); font-size: 12px; margin-top: 2px; }
@@ -3385,6 +4221,7 @@ body {
 .badge-high { background: var(--orange-soft); color: var(--orange); border-color: var(--orange-border); }
 .badge-medium { background: var(--yellow-soft); color: var(--yellow); border-color: var(--yellow-border); }
 .badge-low { background: var(--green-soft); color: var(--green); border-color: var(--green-border); }
+.badge-archived { background: var(--orange-soft); color: var(--orange); border-color: var(--orange-border); }
 .badge-review { background: var(--purple-soft); color: var(--purple); border-color: var(--purple-border); }
 .badge-none { background: var(--surface-subtle); color: var(--text-subtle); border-color: var(--border); }
 .impact-reasons { margin: 9px 0 0; padding-left: 20px; color: var(--text-subtle); font-size: 12px; }
@@ -3450,7 +4287,9 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="page-subtitle">
             Generated ${esc(generatedAt)} &nbsp;&middot;&nbsp;
             ${num(scannableWorkflows.size())} of ${num(workflowSnapshots.size())} workflows scanned &nbsp;&middot;&nbsp;
-            ${num(allCustomFields.size())} custom fields in the instance
+            ${num(allCustomFields.size())} custom fields in the instance &nbsp;&middot;&nbsp;
+            ${num(activeProjectIdByKey.size())} active Spaces &nbsp;&middot;&nbsp;
+            ${includeArchived ? num(archivedProjectIdByKey.size()) + ' archived Spaces' : 'archived Spaces off'}
         </div>
     </div>
     <div class="actions">
@@ -3458,10 +4297,11 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <a class="button" href="${lnk([format: 'csv'])}">CSV</a>
         <a class="button ${includeDrafts ? 'on' : ''}" href="${lnk([includeDrafts: includeDrafts ? null : 'true'])}">Drafts</a>
         <a class="button ${includeModules ? 'on' : ''}" href="${lnk([includeModules: includeModules ? null : 'true'])}">Modules</a>
+        <a class="button ${includeArchived ? 'on' : ''}" href="${lnk([includeArchived: includeArchived ? 'false' : null])}">Archived</a>
         <a class="button ${includeSystem ? 'on' : ''}" href="${lnk([includeSystem: includeSystem ? null : 'true'])}">System apps</a>
         <a class="button ${includeDisabled ? 'on' : ''}" href="${lnk([includeDisabled: includeDisabled ? 'false' : null])}">Disabled apps</a>
-        <a class="button ${issueCounts ? 'on' : ''}" href="${lnk([issueCounts: issueCounts ? 'false' : null])}">Issue counts</a>
-        <a class="button ${includeReach ? 'on' : ''}" href="${lnk([includeReach: includeReach ? 'false' : null])}">Project reach</a>
+        <a class="button ${issueCounts ? 'on' : ''}" href="${lnk([issueCounts: issueCounts ? 'false' : null])}">Work Item counts</a>
+        <a class="button ${includeReach ? 'on' : ''}" href="${lnk([includeReach: includeReach ? 'false' : null])}">Space reach</a>
     </div>
 </div>
 
@@ -3469,7 +4309,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
     <div><strong>Instance:</strong> ${esc(instanceTitle ?: Fp.NA)}</div>
     <div><strong>Base URL:</strong> <span class="mono">${esc(instanceBaseUrl ?: Fp.NA)}</span></div>
     <div><strong>Jira:</strong> ${esc(jiraVersion ?: Fp.NA)} (build ${esc(jiraBuild ?: Fp.NA)})</div>
-    <div><strong>Options:</strong> <span class="mono">includeSystem=${includeSystem} includeDisabled=${includeDisabled} includeDrafts=${includeDrafts} includeModules=${includeModules} issueCounts=${issueCounts} issueBudgetMs=${issueBudgetMs}</span></div>
+    <div><strong>Options:</strong> <span class="mono">includeSystem=${includeSystem} includeDisabled=${includeDisabled} includeDrafts=${includeDrafts} includeModules=${includeModules} includeArchived=${includeArchived} includeReach=${includeReach} issueCounts=${issueCounts} issueBudgetMs=${issueBudgetMs}</span></div>
 </div>
 
 <div class="summary-grid">
@@ -3486,8 +4326,12 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="summary-label">App Custom Fields</div>
     </div>
     <div class="summary-card">
-        <div class="summary-value">${num(totalIssueFieldAssociations)}${issueTotalsPartial ? '<span class="warn" title="Not every field was counted, the total is a lower bound">&#42;</span>' : ''}</div>
-        <div class="summary-label">Issue-Field Associations</div>
+        <div class="summary-value">${issueCounts && includeArchived ? num(totalActiveIssueFieldAssociations) + (issueSplitTotalsPartial ? '<span class="warn" title="The active/archive split is incomplete">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="summary-label">Work Item Associations · Active</div>
+    </div>
+    <div class="summary-card">
+        <div class="summary-value">${issueCounts && includeArchived ? num(totalArchivedIssueFieldAssociations) + (issueSplitTotalsPartial ? '<span class="warn" title="The active/archive split is incomplete">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="summary-label">Work Item Associations · Archived</div>
     </div>
     <div class="summary-card">
         <div class="summary-value">${num(totalScreenPlacements)}</div>
@@ -3498,8 +4342,12 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="summary-label">Workflow References</div>
     </div>
     <div class="summary-card">
-        <div class="summary-value">${includeReach ? num(allImpactedProjects.size()) : '<span class="muted">off</span>'}</div>
-        <div class="summary-label">Projects Touched By An App${impactedIssuesPartial ? '<span class="warn" title="Not every project was counted">&#42;</span>' : ""}</div>
+        <div class="summary-value">${includeReach ? num(allActiveImpactedSpaces.size()) : '<span class="muted">off</span>'}</div>
+        <div class="summary-label">Spaces Touched · Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete) ? '<span class="warn" title="Active Space reach is incomplete">&#42;</span>' : ""}</div>
+    </div>
+    <div class="summary-card">
+        <div class="summary-value">${includeReach && includeArchived ? num(allArchivedImpactedSpaces.size()) : '<span class="muted">off</span>'}</div>
+        <div class="summary-label">Spaces Touched · Archived${includeReach && includeArchived && (archivedReachTotalsPartial || archivedReachInventoryIncomplete) ? '<span class="warn" title="Archived Space reach is incomplete">&#42;</span>' : ""}</div>
     </div>
 </div>
 
@@ -3528,7 +4376,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         }
         if (issueCountsSkippedByBudget > 0) {
             html.append("""        <li>
-            ${num(issueCountsSkippedByBudget)} field(s) were not counted because the issue-count budget of
+            ${num(issueCountsSkippedByBudget)} field(s) were not counted because the Work Item-count budget of
             ${num(issueBudgetMs)} ms was exhausted. They show <span class="warn">n/m</span>, not zero.
             Raise it with <span class="mono">issueBudgetMs=0</span> for an unlimited run.
         </li>
@@ -3538,8 +4386,8 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
             html.append("""        <li>
             The screen scheme index was cut off after ${num(screenSchemesWalked)} of
             ${num(screenSchemesTotal)} screen schemes because the budget of ${num(issueBudgetMs)} ms
-            ran out. Every field therefore shows <span class="warn">n/m</span> for project reach
-            instead of a project list that would be too short. Raise it with
+            ran out. Every field therefore shows <span class="warn">n/m</span> for Space reach
+            instead of a Space list that would be too short. Raise it with
             <span class="mono">issueBudgetMs=0</span>, or drop the whole chain with
             <span class="mono">includeReach=false</span>.
         </li>
@@ -3637,6 +4485,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
     <span class="badge badge-high">HIGH ${highApps}</span>
     <span class="badge badge-medium">MEDIUM ${mediumApps}</span>
     <span class="badge badge-low">LOW ${lowApps}</span>
+    <span class="badge badge-archived">LEGACY ONLY ${legacyOnlyApps}</span>
     <span class="badge badge-review">REVIEW REQUIRED ${reviewApps}</span>
     <span class="badge badge-none">NO DETECTABLE FOOTPRINT ${noFootprintApps}</span>
 </div>
@@ -3650,6 +4499,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <option value="HIGH">High</option>
         <option value="MEDIUM">Medium</option>
         <option value="LOW">Low</option>
+        <option value="LEGACY_ONLY">Legacy only</option>
         <option value="REVIEW_REQUIRED">Review required</option>
         <option value="NO_DETECTABLE_FOOTPRINT">No detectable footprint</option>
     </select>
@@ -3669,7 +4519,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         html.append("""<div class="notice">
     <strong>Decommission candidates (${num(decommissionCandidates.size())})</strong>
     <div style="margin-top:6px">
-        Enabled, not system-provided, and carrying no detectable configuration or data footprint.
+        Included in this report, not system-provided, and carrying no detectable configuration or data footprint.
         That is a starting point for a conversation, not a verdict: UI-only, REST-only or
         runtime-only functionality leaves no trace here, and this report does not measure usage.
     </div>
@@ -3698,6 +4548,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         else if (impact.level == "HIGH") impactClass = "badge-high"
         else if (impact.level == "MEDIUM") impactClass = "badge-medium"
         else if (impact.level == "LOW") impactClass = "badge-low"
+        else if (impact.level == "LEGACY_ONLY") impactClass = "badge-archived"
         else if (impact.level == "REVIEW_REQUIRED") impactClass = "badge-review"
 
         StringBuilder searchText = new StringBuilder()
@@ -3758,8 +4609,16 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="metric-label">App Custom Fields</div>
     </div>
     <div class="metric">
-        <div class="metric-value">${num(app.issueFieldAssociations)}${app.issueFieldAssociationsPartial ? '<span class="warn" title="Incomplete, lower bound">&#42;</span>' : ''}</div>
-        <div class="metric-label">Issue-Field Associations</div>
+        <div class="metric-value">${issueCounts ? num(app.issueFieldAssociations) + (app.issueFieldAssociationsPartial ? '<span class="warn" title="Incomplete, lower bound">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="metric-label">Work Item Associations &middot; All</div>
+    </div>
+    <div class="metric">
+        <div class="metric-value">${issueCounts && includeArchived ? num(app.activeIssueFieldAssociations) + (app.issueAssociationSplitPartial ? '<span class="warn" title="Incomplete active/archive split">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="metric-label">Work Item Associations &middot; Active</div>
+    </div>
+    <div class="metric">
+        <div class="metric-value">${issueCounts && includeArchived ? num(app.archivedIssueFieldAssociations) + (app.issueAssociationSplitPartial ? '<span class="warn" title="Incomplete active/archive split">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="metric-label">Work Item Associations &middot; Archived</div>
     </div>
     <div class="metric">
         <div class="metric-value">${num(app.screenPlacements)}</div>
@@ -3778,8 +4637,12 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="metric-label">Workflow References</div>
     </div>
     <div class="metric impact">
-        <div class="metric-value">${impactCell(app)}</div>
-        <div class="metric-label">Projects Touched${app.impactedIssues != null ? " &middot; " + num(app.impactedIssues) + " issues" : ""}</div>
+        <div class="metric-value">${includeReach ? num(app.activeImpactedProjectKeys.size()) + ((app.activeImpactPartial || activeReachInventoryIncomplete) ? '<span class="warn" title="Incomplete, lower bound">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="metric-label">Spaces Touched &middot; Active${issueCounts && app.activeImpactedIssues != null ? " &middot; " + num(app.activeImpactedIssues) + " Work Items" : ""}</div>
+    </div>
+    <div class="metric impact">
+        <div class="metric-value">${includeReach && includeArchived ? num(app.archivedImpactedProjectKeys.size()) + ((app.archivedImpactPartial || archivedReachInventoryIncomplete) ? '<span class="warn" title="Incomplete, lower bound">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="metric-label">Spaces Touched &middot; Archived${issueCounts && includeArchived && app.archivedImpactedIssues != null ? " &middot; " + num(app.archivedImpactedIssues) + " Work Items" : ""}</div>
     </div>
 </div>
 
@@ -3832,12 +4695,14 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
             <tr>
                 <th>Field</th>
                 <th>Custom Field Type</th>
-                <th class="num">Issues With Value</th>
+                <th class="num">Work Items With Value · Active</th>
+                <th class="num">Work Items With Value · Archived</th>
                 <th class="num">Contexts</th>
-                <th>Project Scope</th>
-                <th>Issue Type Scope</th>
+                <th>Space Scope</th>
+                <th>Work Item Type Scope</th>
                 <th class="num">Screens</th>
-                <th>Projects Reached Via Screens</th>
+                <th>Active Spaces Reached Via Screens</th>
+                <th>Archived Spaces Reached Via Screens</th>
             </tr>
         </thead>
         <tbody>
@@ -3849,22 +4714,22 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 if (field.allProjects == null) {
                     projectScope = "Not readable"
                 } else if (field.allProjects.booleanValue()) {
-                    projectScope = "All projects"
+                    projectScope = "All Spaces"
                 } else if (!field.projectKeys.isEmpty()) {
                     projectScope = String.join(", ", field.projectKeys)
                 } else {
-                    projectScope = "No explicit projects"
+                    projectScope = "No explicit Spaces"
                 }
 
                 String issueTypeScope
                 if (field.allIssueTypes == null) {
                     issueTypeScope = "Not readable"
                 } else if (field.allIssueTypes.booleanValue()) {
-                    issueTypeScope = "All issue types"
+                    issueTypeScope = "All Work Item types"
                 } else if (!field.issueTypes.isEmpty()) {
                     issueTypeScope = String.join(", ", field.issueTypes)
                 } else {
-                    issueTypeScope = "No explicit issue types"
+                    issueTypeScope = "No explicit Work Item types"
                 }
 
                 String contextCell = field.contextCount == null ?
@@ -3878,18 +4743,20 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 html.append("""            <tr>
                 <td><strong>${esc(field.name)}</strong><div class="mono muted">${esc(field.id)}</div></td>
                 <td class="mono">${esc(field.typeKey)}</td>
-                <td class="num">${issueCell(field)}</td>
+                <td class="num">${issueSplitCell(field, false)}</td>
+                <td class="num">${includeArchived ? issueSplitCell(field, true) : '<span class="muted">off</span>'}</td>
                 <td class="num">${contextCell}</td>
                 <td>${esc(projectScope)}</td>
                 <td>${esc(issueTypeScope)}</td>
                 <td class="num">${screenCell}</td>
-                <td>${projectsCell(field.reachProjectKeys, field.reachState)}</td>
+                <td>${projectsCell(field.activeReachProjectKeys, Fp.partitionDisplayState(field.reachState, activeProjectInventoryComplete))}</td>
+                <td>${includeArchived ? projectsCell(field.archivedReachProjectKeys, Fp.partitionDisplayState(field.reachState, archivedProjectInventoryComplete)) : '<span class="muted">off</span>'}</td>
             </tr>
 """)
 
                 if (!field.screenPlacements.isEmpty()) {
                     html.append("""            <tr>
-                <td colspan="8">
+                <td colspan="10">
                     <details>
                         <summary>Screen placements for ${esc(field.name)}</summary>
                         <div class="table-wrap">
@@ -3939,8 +4806,10 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 <th class="num">Plugin Key Hits</th>
                 <th class="num">Module Class Hits</th>
                 <th>Detection</th>
-                <th>Projects Using This Workflow</th>
-                <th class="num">Issues In Them</th>
+                <th>Active Spaces Using This Workflow</th>
+                <th>Archived Spaces Using This Workflow</th>
+                <th class="num">Active Work Items In Them</th>
+                <th class="num">Archived Work Items In Them</th>
             </tr>
         </thead>
         <tbody>
@@ -3960,6 +4829,10 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 String classCell = reference.classReferences == null ?
                     "<span class=\"muted\" title=\"Not evaluated, the plugin key already matched\">n/e</span>" :
                     esc(num(reference.classReferences))
+                String activeReachDisplayState = Fp.partitionDisplayState(
+                    reference.reachState, activeProjectInventoryComplete)
+                String archivedReachDisplayState = Fp.partitionDisplayState(
+                    reference.reachState, archivedProjectInventoryComplete)
 
                 html.append("""            <tr>
                 <td><strong>${esc(reference.name)}</strong></td>
@@ -3968,14 +4841,16 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 <td class="num">${num(reference.keyReferences)}</td>
                 <td class="num">${classCell}</td>
                 <td>${esc(reference.detection)}</td>
-                <td>${projectsCell(reference.projectKeys, reference.reachState)}</td>
-                <td class="num">${reference.issueCount == null ? '<span class="muted">n/a</span>' : esc(num(reference.issueCount))}</td>
+                <td>${projectsCell(reference.activeProjectKeys, activeReachDisplayState)}</td>
+                <td>${includeArchived ? projectsCell(reference.archivedProjectKeys, archivedReachDisplayState) : '<span class="muted">off</span>'}</td>
+                <td class="num">${countCell(reference.activeIssueCount, Fp.countDisplayState(issueCounts, activeReachDisplayState, reference.activeIssueCount))}</td>
+                <td class="num">${countCell(reference.archivedIssueCount, Fp.countDisplayState(issueCounts && includeArchived, archivedReachDisplayState, reference.archivedIssueCount))}</td>
             </tr>
 """)
 
                 if (!reference.matchingModuleClasses.isEmpty()) {
                     html.append("""            <tr>
-                <td colspan="8">
+                <td colspan="10">
                     <details>
                         <summary>Matching module classes</summary>
                         <ul>
@@ -4084,9 +4959,12 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <li>App name is resolved through the plugin i18n name where available. The technical
             descriptor name and plugin key are shown separately.</li>
         <li>Enabled Extension Modules are capabilities supplied by the app, not occurrences of usage.</li>
-        <li>Issue-Field Associations are the sum of issues containing non-empty values across
-            app-owned custom fields. They are not a unique issue count. A value marked
+        <li>Work Item Associations are the sum of Work Items containing non-empty values across
+            app-owned custom fields. They are not a unique Work Item count. A value marked
             <span class="warn">&#42;</span> is a lower bound because at least one field was not counted.</li>
+        <li>Archived Spaces and Work Items are reported separately from current evidence. If the
+            archive scan is disabled or incomplete, a zero current footprint requires review and is
+            never promoted to a decommission candidate.</li>
         <li>A read that failed is shown as <span class="bad">err</span>, a value that was not
             measured as <span class="warn">n/m</span>, and a value that was deliberately not
             evaluated as <span class="muted">n/e</span>. None of them is a zero.</li>
@@ -4098,21 +4976,21 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <li>Module categories come from an ordered substring heuristic over the descriptor class
             name. The order is: Custom Fields, Workflow, JQL / Search, UI, REST / API, HTTP / Servlet,
             Events / Listeners, Jobs / Services, Reports / Dashboards, Permissions / Security,
-            Project, Issue, Other. First match wins, so a descriptor matching several groups is
+            Space, Work Item, Other. First match wins, so a descriptor matching several groups is
             counted in the earlier one only.</li>
         <li>Custom fields are attributed to an app when the field type key starts with the plugin key
             or equals one of the plugin module complete keys. Fields whose type cannot be resolved
             at all - typically because the providing app is disabled or removed - cannot be
             attributed and are reported in the measurement notes instead.</li>
-        <li><strong>Projects Touched</strong> is the blast radius: the union of the projects reached
+        <li><strong>Spaces Touched</strong> is the blast radius: the union of the Spaces reached
             through both paths. A workflow reference leads through the workflow schemes that contain
-            that workflow to their projects; a custom field leads through the screens it sits on, the
+            that workflow to their Spaces; a custom field leads through the screens it sits on, the
             field screen schemes that use those screens, and the issue type screen schemes that bind
-            them to projects. The union is taken before any issue is counted, so a project reached by
-            both paths is counted once. The issue figure counts every issue in those projects, not
-            issues that actually use the app - it is an upper bound on exposure, not a usage number.</li>
-        <li>Projects that inherit the default workflow scheme without an explicit association may not
-            appear on the workflow path. Treat the project list as a lower bound and verify a
+            them to Spaces. The union is taken before any Work Item is counted, so a Space reached by
+            both paths is counted once. The Work Item figure counts every Work Item in those Spaces,
+            not Work Items that actually use the app - it is an upper bound on exposure, not a usage number.</li>
+        <li>Spaces that inherit the default workflow scheme without an explicit association may not
+            appear on the workflow path. Treat the Space list as a lower bound and verify a
             surprising zero against the scheme configuration.</li>
         <li><strong>REST and Servlet modules</strong> count what the app hangs into the web layer,
             taken from the descriptor names. It is a surface indicator, not a vulnerability finding.</li>

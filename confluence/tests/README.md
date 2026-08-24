@@ -106,8 +106,8 @@ That is precisely the defect the position logic replaced.
   genuinely measured zero still renders as zero.
 - The shared instance-relative impact bands, max-of-dimensions behavior, small-instance and
   large-instance cases, missing denominators, partial lower bounds, complete zero,
-  archived-only handling, CSV evidence, the disabled-scan counter and the visible Instance
-  and Base URL block.
+  archived-only handling, fail-closed decommission eligibility and rendering, CSV evidence,
+  the disabled-scan counter and the visible Instance and Base URL block.
 
 ## What is not covered
 
@@ -170,7 +170,7 @@ the instance.
 
 ## Last recorded run
 
-2026-08-24: 536 assertions green, parse check green. Red-before-green measurement of the
+2026-08-24: 549 assertions green, parse check green. Red-before-green measurement of the
 same run: nine malformed fixtures, the parser refuses nine and the control refuses six;
 eight position cases, the create-only control refuses six moves and claims four parents the
 measurement does not confirm.

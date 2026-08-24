@@ -451,8 +451,25 @@ check("impact map exposes maximum percentage",
 check("impact map exposes dimension evidence",
     ((List<Map<String, Object>>) relativeImpactMap.get("dimensions")).size(), 2)
 
+ImpactAssessment candidateZero = new ImpactAssessment(level: "NO_DETECTABLE_FOOTPRINT")
+ImpactAssessment candidateLegacy = new ImpactAssessment(level: "LEGACY_ONLY")
+ImpactAssessment candidateReview = new ImpactAssessment(level: "REVIEW_REQUIRED")
+ImpactAssessment candidateNotScanned = new ImpactAssessment(level: "NOT_SCANNED")
+ok("non-system measured zero is a decommission candidate",
+    ImpactPolicy.isDecommissionCandidate(false, candidateZero))
+ok("system app is never a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(true, candidateZero))
+ok("unknown system status is never a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(null, candidateZero))
+ok("legacy-only app is not a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(false, candidateLegacy))
+ok("review-required app is not a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(false, candidateReview))
+ok("not-scanned app is not a decommission candidate",
+    !ImpactPolicy.isDecommissionCandidate(false, candidateNotScanned))
+
 ImpactAssessment assessedApp = ImpactAnalyzer.assessConfluence(
-    app, true, Long.valueOf(100L), Long.valueOf(10L), false)
+    app, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
 check("Confluence highest product dimension wins", assessedApp.level, "HIGH")
 ok("Confluence reasons expose space reach",
     assessedApp.reasons.any { String reason -> reason.contains("Current space reach") })
@@ -466,15 +483,15 @@ broadMacro.currentSpaceKeys.addAll(["A", "B", "C", "D", "E", "F", "G", "H"])
 broadSmallInstance.macros.add(broadMacro)
 broadSmallInstance.finish()
 ImpactAssessment broadSmallImpact = ImpactAnalyzer.assessConfluence(
-    broadSmallInstance, true, Long.valueOf(1000L), Long.valueOf(10L), false)
+    broadSmallInstance, true, true, Long.valueOf(1000L), Long.valueOf(10L), false)
 check("eight of ten Confluence spaces is critical", broadSmallImpact.level, "CRITICAL")
 
 ImpactAssessment broadLargeImpact = ImpactAnalyzer.assessConfluence(
-    broadSmallInstance, true, Long.valueOf(1000L), Long.valueOf(1000L), false)
+    broadSmallInstance, true, true, Long.valueOf(1000L), Long.valueOf(1000L), false)
 check("eight of one thousand Confluence spaces is low", broadLargeImpact.level, "LOW")
 
 ImpactAssessment partialAppImpact = ImpactAnalyzer.assessConfluence(
-    partialApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+    partialApp, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
 check("partial positive Confluence evidence can promote", partialAppImpact.level, "LOW")
 ok("partial positive Confluence evidence stays partial", partialAppImpact.partial)
 
@@ -485,7 +502,7 @@ partialZeroMacro.usageState = Cfp.BUDGET
 partialZeroApp.macros.add(partialZeroMacro)
 partialZeroApp.finish()
 ImpactAssessment partialZeroImpact = ImpactAnalyzer.assessConfluence(
-    partialZeroApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+    partialZeroApp, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
 check("partial Confluence zero requires review", partialZeroImpact.level, "REVIEW_REQUIRED")
 
 AppFootprint archivedOnlyApp = new AppFootprint()
@@ -497,24 +514,29 @@ archivedOnlyMacro.archivedSpaceKeys.add("ARCHIVE")
 archivedOnlyApp.macros.add(archivedOnlyMacro)
 archivedOnlyApp.finish()
 ImpactAssessment archivedOnlyImpact = ImpactAnalyzer.assessConfluence(
-    archivedOnlyApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+    archivedOnlyApp, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
 check("archived-only Confluence app keeps legacy state", archivedOnlyImpact.level, "LEGACY_ONLY")
 
 ImpactAssessment persistenceImpact = ImpactAnalyzer.assessConfluence(
-    persistence, true, Long.valueOf(100L), Long.valueOf(10L), false)
+    persistence, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
 check("persistence-only Confluence app requires review", persistenceImpact.level, "REVIEW_REQUIRED")
 
 ImpactAssessment emptyImpact = ImpactAnalyzer.assessConfluence(
-    emptyApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+    emptyApp, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
 check("complete Confluence zero is no detectable footprint",
     emptyImpact.level, "NO_DETECTABLE_FOOTPRINT")
 
+ImpactAssessment archiveDisabledImpact = ImpactAnalyzer.assessConfluence(
+    emptyApp, true, false, Long.valueOf(100L), Long.valueOf(10L), false)
+check("disabled archive scan cannot establish a complete zero",
+    archiveDisabledImpact.level, "REVIEW_REQUIRED")
+
 ImpactAssessment disabledImpact = ImpactAnalyzer.assessConfluence(
-    app, false, Long.valueOf(100L), Long.valueOf(10L), false)
+    app, false, false, Long.valueOf(100L), Long.valueOf(10L), false)
 check("disabled Confluence usage scan is not scanned", disabledImpact.level, "NOT_SCANNED")
 
 ImpactAssessment denominatorFailureImpact = ImpactAnalyzer.assessConfluence(
-    app, true, null, Long.valueOf(10L), true)
+    app, true, true, null, Long.valueOf(10L), true)
 check("failed Confluence denominator keeps known high evidence",
     denominatorFailureImpact.level, "HIGH")
 ok("failed Confluence denominator marks result partial", denominatorFailureImpact.partial)
@@ -966,6 +988,7 @@ Map<String, Object> buildPayload() {
     Map<String, Object> summary = new LinkedHashMap<String, Object>()
     summary.put("apps", Integer.valueOf(2))
     summary.put("disabledApps", Integer.valueOf(0))
+    summary.put("decommissionCandidates", Integer.valueOf(1))
     summary.put("diagnostics", Integer.valueOf(0))
     Map<String, Object> impact = new LinkedHashMap<String, Object>()
     impact.put("critical", Integer.valueOf(1))
@@ -1038,6 +1061,8 @@ ok("budget row shows no zero", !budgetRow.contains("<p>0</p>"))
 ok("measured row found", !measuredRow.isEmpty())
 ok("measured zero renders as zero", measuredRow.contains("<p>0</p>"))
 ok("measured row shows no n/m", !measuredRow.contains("<p>n/m</p>"))
+ok("page export renders the decommission-candidate count",
+    fresh.storage.contains("Decommission candidates") && fresh.storage.contains("<p>1</p>"))
 ok("the page carries the export marker", fresh.storage.contains(PageExport.MARKER))
 check("a fresh page carries no decisions", fresh.decisionsRead, 0)
 check("a fresh page carries no orphans", fresh.orphanKeys.size(), 0)
@@ -1552,6 +1577,16 @@ ok("Confluence uses the shared 5 percent band",
     endpointText.contains('static final BigDecimal MEDIUM_PERCENT = new BigDecimal("5")'))
 ok("Confluence contains no absolute impact count thresholds",
     !(endpointText =~ /(?:CRITICAL|HIGH|MEDIUM)_(?:CONTENT|ASSOCIATIONS|SPACES|ISSUES|PROJECTS|FIELDS|WORKFLOWS)/).find())
+ok("Confluence decommission candidates use the shared guarded predicate",
+    endpointText.contains("ImpactPolicy.isDecommissionCandidate(app.systemProvided, impact)"))
+ok("Confluence system metadata failures remain unknown",
+    endpointText.contains("app.systemProvided = null"))
+ok("Confluence renders a decommission-candidate notice",
+    endpointText.contains("Decommission candidates ("))
+ok("Confluence JSON summary exports the candidate count",
+    endpointText.contains("decommissionCandidates: decommissionCandidates.size()"))
+ok("Confluence page-export summary exports the candidate count",
+    endpointText.contains('exportSummary.put("decommissionCandidates", Integer.valueOf(decommissionCandidates.size()))'))
 
 /* ---- result --------------------------------------------------------------- */
 

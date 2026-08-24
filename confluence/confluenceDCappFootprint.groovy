@@ -134,7 +134,7 @@ class Cfp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "4.6"
+    static final String VERSION = "4.7"
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
@@ -439,6 +439,11 @@ class ImpactPolicy {
     static final BigDecimal CRITICAL_PERCENT = new BigDecimal("50")
     static final BigDecimal HIGH_PERCENT = new BigDecimal("20")
     static final BigDecimal MEDIUM_PERCENT = new BigDecimal("5")
+
+    static boolean isDecommissionCandidate(Boolean systemProvided, ImpactAssessment assessment) {
+        return Boolean.FALSE.equals(systemProvided) && assessment != null &&
+            "NO_DETECTABLE_FOOTPRINT".equals(assessment.level)
+    }
 
     static int rankFor(ImpactDimension dimension) {
         if (dimension == null || !dimension.available() || dimension.numerator <= 0L) {
@@ -766,7 +771,7 @@ class AppFootprint {
     String vendor
     String vendorUrl
     String version
-    boolean systemProvided
+    Boolean systemProvided
     boolean enabled
     String state
 
@@ -1031,6 +1036,7 @@ class ImpactAnalyzer {
     static ImpactAssessment assessConfluence(
         AppFootprint app,
         boolean usageScanned,
+        boolean archivedUsageScanned,
         Long currentContentTotal,
         Long currentSpaceTotal,
         boolean inventoryIncomplete
@@ -1053,12 +1059,25 @@ class ImpactAnalyzer {
 
         ImpactAssessment measured = ImpactPolicy.assess(
             dimensions, inventoryIncomplete || app.currentUsagePartial)
-        if (measured.rank >= 4 || measured.level == "REVIEW_REQUIRED") {
+        boolean archivedIncomplete = !archivedUsageScanned || app.archivedUsagePartial
+        if (measured.rank >= 4) {
+            measured.partial = measured.partial || archivedIncomplete
+            return measured
+        }
+        if (measured.level == "REVIEW_REQUIRED") {
             return measured
         }
         if (app.hasArchivedFootprint()) {
-            return special("LEGACY_ONLY", "Legacy only", 3,
+            ImpactAssessment legacy = special("LEGACY_ONLY", "Legacy only", 3,
                 "No current macro footprint was detected, but archived content still depends on the app.")
+            legacy.partial = archivedIncomplete
+            return legacy
+        }
+        if (archivedIncomplete) {
+            ImpactAssessment review = special("REVIEW_REQUIRED", "Review required", 2,
+                "Archived macro usage was not completely measured; a zero footprint is not established.")
+            review.partial = true
+            return review
         }
         if (app.hasInventoryOnlyPersistenceSignals()) {
             return special("REVIEW_REQUIRED", "Review required", 2,
@@ -1075,12 +1094,14 @@ class Analyzer {
     static ImpactAssessment assessImpact(
         AppFootprint app,
         boolean usageScanned,
+        boolean archivedUsageScanned,
         Long currentContentTotal,
         Long currentSpaceTotal,
         boolean inventoryIncomplete
     ) {
         return ImpactAnalyzer.assessConfluence(
-            app, usageScanned, currentContentTotal, currentSpaceTotal, inventoryIncomplete)
+            app, usageScanned, archivedUsageScanned,
+            currentContentTotal, currentSpaceTotal, inventoryIncomplete)
     }
 
     static boolean scanMacroName(
@@ -1954,6 +1975,7 @@ class PageExport {
         out.append("<table><tbody><tr>").append(head("Metric")).append(head("Value")).append("</tr>")
         out.append(metricRow("Apps in report", numberOf(summary, "apps", locale)))
         out.append(metricRow("Disabled apps", numberOf(summary, "disabledApps", locale)))
+        out.append(metricRow("Decommission candidates", numberOf(summary, "decommissionCandidates", locale)))
         out.append(metricRow("Apps with a current footprint", numberOf(summary, "appsWithCurrentFootprint", locale)))
         out.append(metricRow("Apps with an archived footprint", numberOf(summary, "appsWithArchivedFootprint", locale)))
         out.append(metricRow("Provided app macros", numberOf(capabilities, "providedMacros", locale)))
@@ -2286,13 +2308,13 @@ appFootprint(
         app.displayName = Cfp.resolvePluginName(plugin, i18n)
 
         try {
-            app.systemProvided = pluginMetadataManager.isSystemProvided(plugin)
+            app.systemProvided = Boolean.valueOf(pluginMetadataManager.isSystemProvided(plugin))
         } catch (Exception error) {
-            app.systemProvided = false
+            app.systemProvided = null
             Cfp.note(app.diagnostics, "system-provided flag", error)
         }
 
-        if (app.systemProvided && !includeSystem) {
+        if (app.systemProvided == Boolean.TRUE && !includeSystem) {
             continue
         }
 
@@ -2497,7 +2519,8 @@ appFootprint(
         !currentSpaceInventoryComplete || (includeArchived && !archivedSpaceInventoryComplete)
     for (AppFootprint app : apps) {
         impacts.put(app.pluginKey, Analyzer.assessImpact(
-            app, scanUsage, currentContentTotal, currentSpaceTotal, impactInventoryIncomplete))
+            app, scanUsage, includeArchived,
+            currentContentTotal, currentSpaceTotal, impactInventoryIncomplete))
     }
 
     apps.sort { AppFootprint a, AppFootprint b ->
@@ -2657,6 +2680,7 @@ appFootprint(
     Set<String> globalArchivedContentIds = new HashSet<String>()
     Set<String> globalCurrentSpaces = new HashSet<String>()
     Set<String> globalArchivedSpaces = new HashSet<String>()
+    List<AppFootprint> decommissionCandidates = new ArrayList<AppFootprint>()
 
     for (AppFootprint app : apps) {
         if (!app.enabled) {
@@ -2678,6 +2702,10 @@ appFootprint(
         else if (impact.level == "REVIEW_REQUIRED") reviewApps++
         else if (impact.level == "NO_DETECTABLE_FOOTPRINT") noFootprintApps++
         else if (impact.level == "NOT_SCANNED") notScannedApps++
+
+        if (ImpactPolicy.isDecommissionCandidate(app.systemProvided, impact)) {
+            decommissionCandidates.add(app)
+        }
 
         totalProvidedMacros += app.macros.size()
         totalEnabledMacros += app.enabledMacroCount
@@ -2765,6 +2793,7 @@ appFootprint(
             summary: [
                 apps: apps.size(),
                 disabledApps: disabledApps,
+                decommissionCandidates: decommissionCandidates.size(),
                 appsWithCurrentFootprint: appsWithCurrentFootprint,
                 appsWithArchivedFootprint: appsWithArchivedFootprint,
                 impact: [
@@ -2920,7 +2949,7 @@ appFootprint(
             csv.append(Cfp.csv(app.version)).append(",")
             csv.append(app.enabled).append(",")
             csv.append(Cfp.csv(app.state)).append(",")
-            csv.append(app.systemProvided).append(",")
+            csv.append(app.systemProvided == null ? "" : app.systemProvided.toString()).append(",")
             csv.append(Cfp.csv(impact.level)).append(",")
             csv.append(Cfp.csv(impact.maxPercent.toPlainString())).append(",")
             csv.append(impact.partial).append(",")
@@ -3023,7 +3052,7 @@ appFootprint(
         row.put("vendor", app.vendor)
         row.put("version", app.version)
         row.put("enabled", Boolean.valueOf(app.enabled))
-        row.put("systemProvided", Boolean.valueOf(app.systemProvided))
+        row.put("systemProvided", app.systemProvided)
         row.put("impactLevel", impact.level)
         row.put("impactLabel", impact.label)
         row.put("impactMaxPercent", impact.maxPercent)
@@ -3080,6 +3109,7 @@ appFootprint(
     Map<String, Object> exportSummary = new LinkedHashMap<String, Object>()
     exportSummary.put("apps", Integer.valueOf(apps.size()))
     exportSummary.put("disabledApps", Integer.valueOf(disabledApps))
+    exportSummary.put("decommissionCandidates", Integer.valueOf(decommissionCandidates.size()))
     exportSummary.put("appsWithCurrentFootprint", Integer.valueOf(appsWithCurrentFootprint))
     exportSummary.put("appsWithArchivedFootprint", Integer.valueOf(appsWithArchivedFootprint))
     exportSummary.put("impact", exportImpact)
@@ -3203,6 +3233,25 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
   Archived dependencies are separated. Blueprint, template, custom-content, UI, REST, listener and job modules are inventory signals unless a dedicated resolver exists.
 </div>
 """)
+
+    if (!decommissionCandidates.isEmpty()) {
+        html.append("""<div class="notice">
+  <strong>Decommission candidates (${num(decommissionCandidates.size())})</strong>
+  <div style="margin-top:6px">
+    Included in this report, not system-provided, and carrying no detectable configuration or data footprint.
+    That is a starting point for a conversation, not a verdict: UI-only, REST-only or runtime-only
+    functionality leaves no trace here, and this report does not measure usage.
+  </div>
+  <ul>
+""")
+        for (AppFootprint candidate : decommissionCandidates) {
+            html.append("<li>" + esc(candidate.displayName) + " <span class=\"mono\">" +
+                esc(candidate.pluginKey) + "</span> · " + esc(num(candidate.enabledModuleCount)) +
+                " enabled modules" + (candidate.enabled ? "" : " · <span class=\"badge badge-disabled\">DISABLED</span>") +
+                "</li>")
+        }
+        html.append("</ul></div>")
+    }
 
     if (Cfp.diagBoxShown(macrosSkippedByBudget, totalDiagnostics)) {
         html.append("""<div class="${Cfp.diagClass(macrosSkippedByBudget, totalReadErrors)}"><strong>Measurement notes</strong><ul>""")

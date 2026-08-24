@@ -8,8 +8,8 @@ no Jira on the classpath and no running instance.
 
 The classes free of every Jira type are `Fp`, `AppModuleInfo`, `ScreenPlacementInfo`,
 `CustomFieldFootprint`, `WorkflowSnapshot`, `WorkflowReference`, `ImpactPolicy`,
-`ImpactDimension`, `ImpactAssessment`, `AppFootprint`, `ImpactAnalyzer`, `DecisionRead`,
-`ExportOutcome` and `PageExport`.
+`ProjectPartition`, `IssueTotals`, `ImpactDimension`, `ImpactAssessment`, `AppFootprint`,
+`ImpactAnalyzer`, `DecisionRead`, `ExportOutcome` and `PageExport`.
 
 ## What is covered
 
@@ -79,9 +79,13 @@ at all, so no number of them can make the box look like a fault.
   of projects across both paths, an issue count taken exactly once per project, the lower
   bound when a count is missing, and the never-evaluated case that must stay `n/e` rather
   than becoming zero.
+- Active/archive partitioning for Space reach, Work Item reach and custom-field values,
+  including unknown keys, invalid total splits, bounded archive-source contracts, and the
+  rule that known active evidence survives an omitted archive scan.
 - The shared instance-relative impact bands, max-of-dimensions behavior, small-instance and
   large-instance cases, missing denominators, partial lower bounds, complete zero, JSON
-  evidence, HTML counters/filtering, CSV evidence and Confluence page-export parity.
+  evidence, archive-only `LEGACY_ONLY`, fail-closed decommission eligibility, HTML
+  counters/filtering, CSV evidence and Confluence page-export parity.
 - A head-to-head benchmark of the old algorithm against the three-stage scan, asserting
   that both produce identical results.
 
@@ -147,9 +151,9 @@ instance.
 
 ## Last recorded run
 
-2026-08-24: 330 assertions green, parse check green. Red-before-green measurement of the
+2026-08-24: 441 assertions green, parse check green. Red-before-green measurement of the
 same run: eight position cases, the create-only control refuses six moves and claims four
 parents the measurement does not confirm.
 
 Benchmark over 100 workflows, 19.3 million characters of XML and 100 apps: old scan
-6606 ms, new scan 1192 ms, identical results.
+4365 ms, new scan 1035 ms, identical results.
