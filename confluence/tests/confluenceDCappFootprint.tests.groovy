@@ -446,6 +446,74 @@ check("impact map exposes maximum percentage",
 check("impact map exposes dimension evidence",
     ((List<Map<String, Object>>) relativeImpactMap.get("dimensions")).size(), 2)
 
+ImpactAssessment assessedApp = ImpactAnalyzer.assessConfluence(
+    app, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("Confluence highest product dimension wins", assessedApp.level, "HIGH")
+ok("Confluence reasons expose space reach",
+    assessedApp.reasons.any { String reason -> reason.contains("Current space reach") })
+
+AppFootprint broadSmallInstance = new AppFootprint()
+MacroFootprint broadMacro = new MacroFootprint()
+broadMacro.moduleEnabled = Boolean.TRUE
+broadMacro.usageState = Cfp.MEASURED
+broadMacro.currentContentIds.add("one")
+broadMacro.currentSpaceKeys.addAll(["A", "B", "C", "D", "E", "F", "G", "H"])
+broadSmallInstance.macros.add(broadMacro)
+broadSmallInstance.finish()
+ImpactAssessment broadSmallImpact = ImpactAnalyzer.assessConfluence(
+    broadSmallInstance, true, Long.valueOf(1000L), Long.valueOf(10L), false)
+check("eight of ten Confluence spaces is critical", broadSmallImpact.level, "CRITICAL")
+
+ImpactAssessment broadLargeImpact = ImpactAnalyzer.assessConfluence(
+    broadSmallInstance, true, Long.valueOf(1000L), Long.valueOf(1000L), false)
+check("eight of one thousand Confluence spaces is low", broadLargeImpact.level, "LOW")
+
+ImpactAssessment partialAppImpact = ImpactAnalyzer.assessConfluence(
+    partialApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("partial positive Confluence evidence can promote", partialAppImpact.level, "LOW")
+ok("partial positive Confluence evidence stays partial", partialAppImpact.partial)
+
+AppFootprint partialZeroApp = new AppFootprint()
+MacroFootprint partialZeroMacro = new MacroFootprint()
+partialZeroMacro.moduleEnabled = Boolean.TRUE
+partialZeroMacro.usageState = Cfp.BUDGET
+partialZeroApp.macros.add(partialZeroMacro)
+partialZeroApp.finish()
+ImpactAssessment partialZeroImpact = ImpactAnalyzer.assessConfluence(
+    partialZeroApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("partial Confluence zero requires review", partialZeroImpact.level, "REVIEW_REQUIRED")
+
+AppFootprint archivedOnlyApp = new AppFootprint()
+MacroFootprint archivedOnlyMacro = new MacroFootprint()
+archivedOnlyMacro.moduleEnabled = Boolean.TRUE
+archivedOnlyMacro.usageState = Cfp.MEASURED
+archivedOnlyMacro.archivedContentIds.add("old")
+archivedOnlyMacro.archivedSpaceKeys.add("ARCHIVE")
+archivedOnlyApp.macros.add(archivedOnlyMacro)
+archivedOnlyApp.finish()
+ImpactAssessment archivedOnlyImpact = ImpactAnalyzer.assessConfluence(
+    archivedOnlyApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("archived-only Confluence app keeps legacy state", archivedOnlyImpact.level, "LEGACY_ONLY")
+
+ImpactAssessment persistenceImpact = ImpactAnalyzer.assessConfluence(
+    persistence, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("persistence-only Confluence app requires review", persistenceImpact.level, "REVIEW_REQUIRED")
+
+ImpactAssessment emptyImpact = ImpactAnalyzer.assessConfluence(
+    emptyApp, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("complete Confluence zero is no detectable footprint",
+    emptyImpact.level, "NO_DETECTABLE_FOOTPRINT")
+
+ImpactAssessment disabledImpact = ImpactAnalyzer.assessConfluence(
+    app, false, Long.valueOf(100L), Long.valueOf(10L), false)
+check("disabled Confluence usage scan is not scanned", disabledImpact.level, "NOT_SCANNED")
+
+ImpactAssessment denominatorFailureImpact = ImpactAnalyzer.assessConfluence(
+    app, true, null, Long.valueOf(10L), true)
+check("failed Confluence denominator keeps known high evidence",
+    denominatorFailureImpact.level, "HIGH")
+ok("failed Confluence denominator marks result partial", denominatorFailureImpact.partial)
+
 /* ---- 10. B8 macro cross-check --------------------------------------------- */
 
 /* One enabled module classified as "Macros", two macros enumerated: the two

@@ -1015,105 +1015,70 @@ class AppFootprint {
  * Analysis helpers
  * ========================================================================== */
 
+class ImpactAnalyzer {
+
+    static ImpactAssessment special(String level, String label, int rank, String reason) {
+        ImpactAssessment result = new ImpactAssessment()
+        result.level = level
+        result.label = label
+        result.rank = rank
+        result.reasons.add(reason)
+        return result
+    }
+
+    static ImpactAssessment assessConfluence(
+        AppFootprint app,
+        boolean usageScanned,
+        Long currentContentTotal,
+        Long currentSpaceTotal,
+        boolean inventoryIncomplete
+    ) {
+        if (!usageScanned) {
+            return special("NOT_SCANNED", "Usage not scanned", 1,
+                "Macro usage scanning was disabled.")
+        }
+
+        List<ImpactDimension> dimensions = new ArrayList<ImpactDimension>()
+        dimensions.add(new ImpactDimension(
+            "currentContent", "Current content reach",
+            app.currentUniqueContentCount, currentContentTotal, app.currentUsagePartial))
+        dimensions.add(new ImpactDimension(
+            "currentAssociations", "Current macro association density",
+            app.currentAssociations, currentContentTotal, app.currentUsagePartial))
+        dimensions.add(new ImpactDimension(
+            "currentSpaces", "Current space reach",
+            app.currentSpaceCount, currentSpaceTotal, app.currentUsagePartial))
+
+        ImpactAssessment measured = ImpactPolicy.assess(
+            dimensions, inventoryIncomplete || app.currentUsagePartial)
+        if (measured.rank >= 4 || measured.level == "REVIEW_REQUIRED") {
+            return measured
+        }
+        if (app.hasArchivedFootprint()) {
+            return special("LEGACY_ONLY", "Legacy only", 3,
+                "No current macro footprint was detected, but archived content still depends on the app.")
+        }
+        if (app.hasInventoryOnlyPersistenceSignals()) {
+            return special("REVIEW_REQUIRED", "Review required", 2,
+                "The app provides blueprint, template or custom-content capabilities whose persisted usage cannot be determined generically.")
+        }
+        measured.reasons.clear()
+        measured.reasons.add("No generic macro/configuration footprint was detected. Runtime, UI, REST or proprietary app usage is still possible.")
+        return measured
+    }
+}
+
 class Analyzer {
 
-    static ImpactAssessment assessImpact(AppFootprint app, boolean usageScanned) {
-        ImpactAssessment result = new ImpactAssessment()
-
-        if (!usageScanned) {
-            result.level = "NOT_SCANNED"
-            result.label = "Usage not scanned"
-            result.rank = 1
-            result.reasons.add("Macro usage scanning was disabled.")
-            return result
-        }
-
-        long currentContent = app.currentUniqueContentCount
-        long currentAssociations = app.currentAssociations
-        int currentSpaces = app.currentSpaceCount
-
-        if (
-            currentContent >= ImpactPolicy.CRITICAL_CONTENT ||
-            currentAssociations >= ImpactPolicy.CRITICAL_ASSOCIATIONS ||
-            currentSpaces >= ImpactPolicy.CRITICAL_SPACES
-        ) {
-            result.level = "CRITICAL"
-            result.label = "Critical"
-            result.rank = 7
-
-            if (currentContent >= ImpactPolicy.CRITICAL_CONTENT) {
-                result.reasons.add(String.valueOf(currentContent) + " current content objects depend on app macros.")
-            }
-            if (currentAssociations >= ImpactPolicy.CRITICAL_ASSOCIATIONS) {
-                result.reasons.add(String.valueOf(currentAssociations) + " current macro-content associations.")
-            }
-            if (currentSpaces >= ImpactPolicy.CRITICAL_SPACES) {
-                result.reasons.add("Current footprint spans " + String.valueOf(currentSpaces) + " spaces.")
-            }
-            return result
-        }
-
-        if (
-            currentContent >= ImpactPolicy.HIGH_CONTENT ||
-            currentAssociations >= ImpactPolicy.HIGH_ASSOCIATIONS ||
-            currentSpaces >= ImpactPolicy.HIGH_SPACES
-        ) {
-            result.level = "HIGH"
-            result.label = "High"
-            result.rank = 6
-            result.reasons.add(
-                "Significant current macro footprint: " + String.valueOf(currentContent) +
-                " content objects, " + String.valueOf(currentAssociations) +
-                " associations, " + String.valueOf(currentSpaces) + " spaces."
-            )
-            return result
-        }
-
-        if (
-            currentContent >= ImpactPolicy.MEDIUM_CONTENT ||
-            currentAssociations >= ImpactPolicy.MEDIUM_ASSOCIATIONS ||
-            currentSpaces >= ImpactPolicy.MEDIUM_SPACES
-        ) {
-            result.level = "MEDIUM"
-            result.label = "Medium"
-            result.rank = 5
-            result.reasons.add(
-                "Measurable current macro footprint: " + String.valueOf(currentContent) +
-                " content objects, " + String.valueOf(currentAssociations) +
-                " associations, " + String.valueOf(currentSpaces) + " spaces."
-            )
-            return result
-        }
-
-        if (app.hasCurrentFootprint()) {
-            result.level = "LOW"
-            result.label = "Low"
-            result.rank = 4
-            result.reasons.add("Current macro footprint exists but remains below configured assessment thresholds.")
-            return result
-        }
-
-        if (app.hasArchivedFootprint()) {
-            result.level = "LEGACY_ONLY"
-            result.label = "Legacy only"
-            result.rank = 3
-            result.reasons.add("No current macro footprint detected, but archived content still depends on the app.")
-            return result
-        }
-
-        if (app.hasInventoryOnlyPersistenceSignals()) {
-            result.level = "REVIEW_REQUIRED"
-            result.label = "Review required"
-            result.rank = 2
-            result.reasons.add("The app provides blueprint, template or custom-content capabilities whose persisted usage cannot be determined generically.")
-            return result
-        }
-
-        result.level = "NO_DETECTABLE_FOOTPRINT"
-        result.label = "No detectable footprint"
-        result.rank = 0
-        result.reasons.add("No generic macro/configuration footprint was detected. Runtime, UI, REST or proprietary app usage is still possible.")
-        return result
+    static ImpactAssessment assessImpact(
+        AppFootprint app,
+        boolean usageScanned,
+        Long currentContentTotal,
+        Long currentSpaceTotal,
+        boolean inventoryIncomplete
+    ) {
+        return ImpactAnalyzer.assessConfluence(
+            app, usageScanned, currentContentTotal, currentSpaceTotal, inventoryIncomplete)
     }
 
     static boolean scanMacroName(
@@ -2221,6 +2186,7 @@ appFootprint(
     PluginMetadataManager pluginMetadataManager = ComponentLocator.getComponent(PluginMetadataManager.class)
     SearchManager searchManager = ComponentLocator.getComponent(SearchManager.class)
     SpaceManager spaceManager = ComponentLocator.getComponent(SpaceManager.class)
+    PageManager pageManager = ComponentLocator.getComponent(PageManager.class)
     UserMacroLibrary userMacroLibrary = ComponentLocator.getComponent(UserMacroLibrary.class)
     I18NBeanFactory i18nBeanFactory = ComponentLocator.getComponent(I18NBeanFactory.class)
     I18NBean i18n = i18nBeanFactory == null ? null : i18nBeanFactory.getI18NBean()
@@ -2235,17 +2201,35 @@ appFootprint(
 
     Set<String> currentSpaceKeys = new HashSet<String>()
     Set<String> archivedSpaceKeys = new HashSet<String>()
+    boolean currentSpaceInventoryComplete = true
+    boolean archivedSpaceInventoryComplete = true
 
     try {
         currentSpaceKeys.addAll(spaceManager.getAllSpaceKeys(SpaceStatus.CURRENT))
     } catch (Exception error) {
+        currentSpaceInventoryComplete = false
         Cfp.note(globalDiagnostics, "current space inventory", error)
     }
 
     try {
         archivedSpaceKeys.addAll(spaceManager.getAllSpaceKeys(SpaceStatus.ARCHIVED))
     } catch (Exception error) {
+        archivedSpaceInventoryComplete = false
         Cfp.note(globalDiagnostics, "archived space inventory", error)
+    }
+
+    Long currentContentTotal = null
+    boolean currentContentInventoryComplete = true
+    try {
+        if (pageManager == null) {
+            throw new IllegalStateException("PageManager unavailable")
+        }
+        long currentPages = (long) pageManager.countCurrentPages()
+        long currentBlogs = (long) pageManager.countCurrentBlogs()
+        currentContentTotal = Long.valueOf(currentPages + currentBlogs)
+    } catch (Exception error) {
+        currentContentInventoryComplete = false
+        Cfp.note(globalDiagnostics, "current content inventory", error)
     }
 
     Collection<Plugin> candidatePlugins = new ArrayList<Plugin>()
@@ -2477,8 +2461,13 @@ appFootprint(
     }
 
     Map<String, ImpactAssessment> impacts = new HashMap<String, ImpactAssessment>()
+    Long currentSpaceTotal = currentSpaceInventoryComplete ?
+        Long.valueOf(currentSpaceKeys.size()) : null
+    boolean impactInventoryIncomplete = !currentContentInventoryComplete ||
+        !currentSpaceInventoryComplete || (includeArchived && !archivedSpaceInventoryComplete)
     for (AppFootprint app : apps) {
-        impacts.put(app.pluginKey, Analyzer.assessImpact(app, scanUsage))
+        impacts.put(app.pluginKey, Analyzer.assessImpact(
+            app, scanUsage, currentContentTotal, currentSpaceTotal, impactInventoryIncomplete))
     }
 
     apps.sort { AppFootprint a, AppFootprint b ->
