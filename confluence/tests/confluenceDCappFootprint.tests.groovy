@@ -1521,8 +1521,18 @@ check("pagination fetches through the typed finder",
 check("space pagination checks for more results", endpointText.count("spacePage.hasMore()"), 1)
 ok("GlobalSettingsManager is imported",
     endpointText.contains("import com.atlassian.confluence.setup.settings.GlobalSettingsManager"))
-check("both settings reads resolve GlobalSettingsManager",
-    endpointText.count("ComponentLocator.getComponent(GlobalSettingsManager.class)"), 2)
+check("all settings reads resolve GlobalSettingsManager",
+    endpointText.count("ComponentLocator.getComponent(GlobalSettingsManager.class)"), 3)
+check("main report renders the instance name once",
+    endpointText.count('<div><strong>Instance:</strong> ${esc(instanceSiteTitle ?: Cfp.NA)}</div>'), 1)
+check("main report renders the Base URL once",
+    endpointText.count('<div><strong>Base URL:</strong> <span class="mono">${esc(instanceBaseUrl ?: Cfp.NA)}</span></div>'), 1)
+check("main report renders the Confluence version once",
+    endpointText.count('<div><strong>Confluence:</strong> ${esc(instanceVersion ?: Cfp.NA)} (build ${esc(instanceBuild ?: Cfp.NA)})</div>'), 1)
+ok("main report renders the active Confluence scan options",
+    endpointText.contains('<div><strong>Options:</strong> <span class="mono">includeSystem=${includeSystem} includeDisabled=${includeDisabled} includeArchived=${includeArchived} includeModules=${includeModules} scanUsage=${scanUsage} scanAliases=${scanAliases} scanBudgetMs=${scanBudgetMs}</span></div>'))
+ok("JSON report exports the Confluence Base URL",
+    endpointText.contains('exportReport.put("baseUrl", instanceBaseUrl)'))
 
 /* ---- result --------------------------------------------------------------- */
 

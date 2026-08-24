@@ -2199,6 +2199,34 @@ appFootprint(
      * happened. */
     List<String> globalObservations = new ArrayList<String>()
 
+    String instanceBaseUrl = null
+    String instanceSiteTitle = null
+    String instanceVersion = null
+    String instanceBuild = null
+
+    try {
+        GlobalSettingsManager globalSettingsManager = ComponentLocator.getComponent(GlobalSettingsManager.class)
+        if (globalSettingsManager != null) {
+            String rawBaseUrl = globalSettingsManager.getGlobalSettings().getBaseUrl()
+            String rawSiteTitle = globalSettingsManager.getGlobalSettings().getSiteTitle()
+            instanceBaseUrl = rawBaseUrl == null || rawBaseUrl.trim().isEmpty() ? null : rawBaseUrl.trim()
+            instanceSiteTitle = rawSiteTitle == null || rawSiteTitle.trim().isEmpty() ? null : rawSiteTitle.trim()
+        }
+    } catch (Exception error) {
+        Cfp.note(globalDiagnostics, "instance settings", error)
+    }
+
+    try {
+        instanceVersion = GeneralUtil.getVersionNumber()
+    } catch (Throwable error) {
+        Cfp.note(globalDiagnostics, "Confluence version", error)
+    }
+    try {
+        instanceBuild = String.valueOf(GeneralUtil.getBuildNumber())
+    } catch (Throwable error) {
+        Cfp.note(globalDiagnostics, "Confluence build", error)
+    }
+
     Set<String> currentSpaceKeys = new HashSet<String>()
     Set<String> archivedSpaceKeys = new HashSet<String>()
     boolean currentSpaceInventoryComplete = true
@@ -3055,6 +3083,10 @@ appFootprint(
     exportReport.put("name", "Confluence App Footprint Analysis")
     exportReport.put("version", Cfp.VERSION)
     exportReport.put("generatedAt", generatedAt)
+    exportReport.put("siteTitle", instanceSiteTitle)
+    exportReport.put("baseUrl", instanceBaseUrl)
+    exportReport.put("instanceVersion", instanceVersion)
+    exportReport.put("instanceBuild", instanceBuild)
 
     Map<String, Object> exportModel = new LinkedHashMap<String, Object>()
     exportModel.put("report", exportReport)
@@ -3092,6 +3124,7 @@ body{margin:0;background:var(--page-bg);color:var(--text);font-family:-apple-sys
 .page{max-width:1660px;margin:0 auto;padding:28px 32px 44px}
 .page-header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:20px}
 .page-title{margin:0 0 4px;font-size:24px;font-weight:650}.subtitle{color:var(--muted);font-size:13px}
+.instance{display:flex;flex-wrap:wrap;gap:6px 28px;margin:12px 0 20px;padding:10px 14px;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow)}.instance div{font-size:13px}.instance strong{font-weight:600}
 .actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.button{display:inline-flex;align-items:center;height:34px;padding:0 12px;border:1px solid var(--border);border-radius:5px;background:#fff;color:var(--text);text-decoration:none;font-size:13px;font-weight:600}.button.on{background:var(--blue-bg);border-color:var(--blue);color:var(--blue)}
 .summary-grid{display:grid;grid-template-columns:repeat(8,minmax(125px,1fr));gap:10px;margin-bottom:16px}.summary-card{min-height:90px;padding:14px 15px;background:#fff;border:1px solid var(--border);border-radius:7px;box-shadow:var(--shadow)}.summary-value{font-size:24px;font-weight:650}.summary-label{margin-top:4px;color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.035em}
 .notice,.diag{margin-bottom:16px;padding:12px 16px;border-radius:6px;background:var(--blue-bg);border:1px solid #b6d6ff;font-size:13px}.diag-info{background:var(--blue-bg);border-color:#b6d6ff}.diag-warn{background:var(--yellow-bg);border-color:var(--yellow-border)}.diag ul{margin:8px 0 0;padding-left:20px}
@@ -3131,6 +3164,13 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
     <a class="button ${includeSystem ? 'on' : ''}" href="${linkSystem}">System apps</a>
     <a class="button ${includeDisabled ? 'on' : ''}" href="${linkDisabled}">Disabled apps</a>
   </div>
+</div>
+
+<div class="instance">
+  <div><strong>Instance:</strong> ${esc(instanceSiteTitle ?: Cfp.NA)}</div>
+  <div><strong>Base URL:</strong> <span class="mono">${esc(instanceBaseUrl ?: Cfp.NA)}</span></div>
+  <div><strong>Confluence:</strong> ${esc(instanceVersion ?: Cfp.NA)} (build ${esc(instanceBuild ?: Cfp.NA)})</div>
+  <div><strong>Options:</strong> <span class="mono">includeSystem=${includeSystem} includeDisabled=${includeDisabled} includeArchived=${includeArchived} includeModules=${includeModules} scanUsage=${scanUsage} scanAliases=${scanAliases} scanBudgetMs=${scanBudgetMs}</span></div>
 </div>
 
 <div class="summary-grid">
