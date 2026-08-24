@@ -478,8 +478,9 @@ class ImpactPolicy {
             if (rank > selectedRank) {
                 selectedRank = rank
             }
-            if (dimension.available() && dimension.percent().compareTo(result.maxPercent) > 0) {
-                result.maxPercent = dimension.percent()
+            BigDecimal dimensionPercent = dimension.percent()
+            if (dimension.available() && dimensionPercent.compareTo(result.maxPercent) > 0) {
+                result.maxPercent = dimensionPercent
             }
             result.partial = result.partial || dimension.partial
         }

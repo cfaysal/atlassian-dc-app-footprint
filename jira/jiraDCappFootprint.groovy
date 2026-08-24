@@ -729,8 +729,9 @@ class ImpactPolicy {
             if (rank > selectedRank) {
                 selectedRank = rank
             }
-            if (dimension.available() && dimension.percent().compareTo(result.maxPercent) > 0) {
-                result.maxPercent = dimension.percent()
+            BigDecimal dimensionPercent = dimension.percent()
+            if (dimension.available() && dimensionPercent.compareTo(result.maxPercent) > 0) {
+                result.maxPercent = dimensionPercent
             }
             result.partial = result.partial || dimension.partial
         }
@@ -2844,7 +2845,7 @@ appFootprint(
 
     Long totalProjects = includeReach && projectInventoryComplete ?
         Long.valueOf(projectIdByKey.size()) : null
-    Long totalCustomFields = customFieldInventoryComplete ?
+    Long totalCustomFieldsForImpact = customFieldInventoryComplete ?
         Long.valueOf(allCustomFields.size()) : null
     Long totalActiveWorkflows = activeWorkflowInventoryComplete ?
         Long.valueOf(activeWorkflowTotalValue) : null
@@ -2856,7 +2857,7 @@ appFootprint(
     for (AppFootprint app : apps) {
         impacts.put(app.pluginKey, ImpactAnalyzer.assessJira(
             app, issueCounts, includeReach, totalIssues, totalProjects,
-            totalCustomFields, totalActiveWorkflows, impactInventoryIncomplete))
+            totalCustomFieldsForImpact, totalActiveWorkflows, impactInventoryIncomplete))
     }
 
     apps.sort { AppFootprint a, AppFootprint b ->
