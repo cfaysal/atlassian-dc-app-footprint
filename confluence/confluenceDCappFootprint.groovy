@@ -62,6 +62,8 @@
 import com.atlassian.confluence.core.BodyContent
 import com.atlassian.confluence.core.BodyType
 import com.atlassian.confluence.core.DefaultSaveContext
+import com.atlassian.confluence.content.service.PageService
+import com.atlassian.confluence.content.service.SpaceService
 import com.atlassian.confluence.macro.browser.MacroMetadataSource
 import com.atlassian.confluence.macro.browser.beans.MacroMetadata
 import com.atlassian.confluence.pages.Page
@@ -125,7 +127,7 @@ class Cfp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "4.3"
+    static final String VERSION = "4.4"
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
@@ -1048,14 +1050,15 @@ class Analyzer {
      * Every type used here was read with javap against Confluence 10.2.10, and
      * the call shape is the one scanMacroName already uses:
      * scan(List<Index>, SearchQuery, Set<String>, Consumer<Map<String,String[]>>).
-     * No component is resolved that this file did not already resolve.
+     * PageService reads each hit back as the same persistence Page type used by
+     * the established export path.
      *
      * Whole words, and a trailing star on the last token only. A LEADING star is
      * deliberately absent: its behaviour on a tokenised field is not documented,
      * and an undocumented wildcard is not something this endpoint ships.
      *
      * The index supplies content ids and nothing else. Title and space of every
-     * hit are read back through PageManager.getPage(long), so what the
+     * hit are read back through PageService's id locator, so what the
      * administrator sees comes from the database - an index entry may name a page
      * that was deleted or moved since it was written, and a hit that no longer
      * resolves, or resolves into another space, is dropped rather than offered.
@@ -1063,7 +1066,7 @@ class Analyzer {
      * A search that throws is reported as a failed search. "No such page" is said
      * only when the search answered and named nothing: the caller answers a miss
      * by creating a page, and a swallowed error would create a duplicate. */
-    static Map<String, Object> searchPagesByTitle(SearchManager searchManager, PageManager pageManager,
+    static Map<String, Object> searchPagesByTitle(SearchManager searchManager, PageService pageService,
                                                   String spaceKey, String query, int limit) {
         Map<String, Object> result = new LinkedHashMap<String, Object>()
         List<Map<String, Object>> pages = new ArrayList<Map<String, Object>>()
@@ -1078,7 +1081,7 @@ class Analyzer {
          * documented null contract, and it stays on top so a title that is
          * already correct is always the first thing offered. */
         try {
-            Page exact = pageManager.getPage(spaceKey, query)
+            Page exact = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, query).getPage()
             if (exact != null && takenIds.add(exact.getIdAsString())) {
                 pages.add(pageRow(exact))
             }
@@ -1148,7 +1151,7 @@ class Analyzer {
         for (String contentId : hitIds) {
             Page page = null
             try {
-                page = pageManager.getPage(Long.parseLong(contentId))
+                page = pageService.getIdPageLocator(Long.parseLong(contentId)).getPage()
             } catch (Exception ignored) {
                 /* One unreadable id costs one candidate, never the whole list.
                  * The search itself answered, which is the distinction that
@@ -3766,11 +3769,11 @@ appFootprint(
                 " characters of the page title.")
         }
 
-        PageManager pageLookup = ComponentLocator.getComponent(PageManager.class)
+        PageService pageLookup = ComponentLocator.getComponent(PageService.class)
         SearchManager searchLookup = ComponentLocator.getComponent(SearchManager.class)
         if (pageLookup == null || searchLookup == null) {
             return refuse(500, "pages", "A component needed for the page search could not be resolved (" +
-                (pageLookup == null ? "PageManager" : "SearchManager") + "), so the parent page could not be " +
+                (pageLookup == null ? "PageService" : "SearchManager") + "), so the parent page could not be " +
                 "looked up. That is a failed lookup, not a space without that page.")
         }
 
@@ -3826,15 +3829,16 @@ appFootprint(
     }
 
     PageManager pageManager = ComponentLocator.getComponent(PageManager.class)
-    SpaceManager spaceManager = ComponentLocator.getComponent(SpaceManager.class)
+    PageService pageService = ComponentLocator.getComponent(PageService.class)
+    SpaceService spaceService = ComponentLocator.getComponent(SpaceService.class)
 
-    if (pageManager == null || spaceManager == null) {
+    if (pageManager == null || pageService == null || spaceService == null) {
         return refuse(500, "validate", "A required Confluence component could not be resolved.")
     }
 
     Space space = null
     try {
-        space = spaceManager.getSpace(spaceKey)
+        space = spaceService.getKeySpaceLocator(spaceKey).getSpace()
     } catch (Exception error) {
         return refuse(500, "validate", "The space \"" + spaceKey + "\" could not be read: " + error.getClass().getSimpleName())
     }
@@ -3857,7 +3861,7 @@ appFootprint(
             return refuse(400, "validate", "The parent page ID \"" + parentRaw + "\" is not a number.")
         }
         try {
-            parentPage = pageManager.getPage(parentId)
+            parentPage = pageService.getIdPageLocator(parentId).getPage()
         } catch (Exception error) {
             return refuse(500, "validate", "The parent page could not be read: " + error.getClass().getSimpleName())
         }
@@ -3873,13 +3877,11 @@ appFootprint(
 
     /* ---- Decision read ----------------------------------------------------- */
 
-    /* getPage(spaceKey, title) is deprecated in favour of ContentService.find, but
-     * the finder restricts by the api-model Space while this endpoint already holds
-     * the persistence Space from SpaceManager. The deprecated lookup has a verified
-     * signature and a documented null contract, so it is used for the read. */
+    /* The exact locator returns the persistence Page used by the established
+     * decision parser and write path. */
     Page existingPage = null
     try {
-        existingPage = pageManager.getPage(spaceKey, title)
+        existingPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, title).getPage()
     } catch (Exception error) {
         return refuse(409, "read", "The existing page could not be read (" + error.getClass().getSimpleName() +
             "). Nothing is written, so no decision can be lost.")
@@ -3935,7 +3937,7 @@ appFootprint(
      * which would be answered by creating a duplicate. */
     if (parentPage == null && !parentTitleRaw.isEmpty()) {
         try {
-            parentPage = pageManager.getPage(spaceKey, parentTitleRaw)
+            parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
         } catch (Exception error) {
             return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be looked up in \"" +
                 spaceKey + "\" (" + PageExport.errorDetail(error) + "). That is a failed read, not a space without " +
@@ -3957,7 +3959,7 @@ appFootprint(
                 container.setBodyContent(new BodyContent(container, PageExport.PARENT_BODY, BodyType.XHTML))
                 container.setCreator(AuthenticatedUserThreadLocal.get())
                 pageManager.saveContentEntity(container, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
-                parentPage = pageManager.getPage(spaceKey, parentTitleRaw)
+                parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
             } catch (Exception error) {
                 return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be created in \"" +
                     spaceKey + "\" (" + PageExport.errorDetail(error) + "). Nothing is written: a report filed at the " +
@@ -4114,7 +4116,7 @@ appFootprint(
 
         /* Read back rather than trusting the save. The id and the version that go
          * into the response are the ones the page actually carries afterwards. */
-        Page stored = pageManager.getPage(space.getKey(), title)
+        Page stored = pageService.getTitleAndSpaceKeyPageLocator(space.getKey(), title).getPage()
         if (stored == null) {
             return refuse(500, "write", "The page could not be written: it is not readable after the save.")
         }

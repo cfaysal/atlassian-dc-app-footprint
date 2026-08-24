@@ -1357,6 +1357,25 @@ ok("the single-class control cannot express either variant", diagColourDiffs == 
 ok("the control paints an observation-only box the same as a degraded one",
     controlDiagClass(0, 0) == controlDiagClass(3, 1) && Cfp.diagClass(0, 0) != Cfp.diagClass(3, 1))
 
+/* ---- 26. service-locator source contract ---------------------------------- */
+
+File endpointSource = new File("confluence/confluenceDCappFootprint.groovy")
+if (!endpointSource.isFile()) {
+    endpointSource = new File("../confluenceDCappFootprint.groovy")
+}
+ok("service-locator contract can read the endpoint source", endpointSource.isFile())
+String endpointText = endpointSource.isFile() ? endpointSource.getText("UTF-8") : ""
+ok("no deprecated PageManager lookup remains", !endpointText.contains("pageManager.getPage("))
+ok("no deprecated SpaceManager lookup remains", !endpointText.contains("spaceManager.getSpace("))
+ok("deprecation warnings are not suppressed", !endpointText.contains('SuppressWarnings("deprecation")'))
+check("all title lookups use PageService", endpointText.count("pageService.getTitleAndSpaceKeyPageLocator("), 5)
+check("all id lookups use PageService", endpointText.count("pageService.getIdPageLocator("), 2)
+check("the space lookup uses SpaceService", endpointText.count("spaceService.getKeySpaceLocator("), 1)
+ok("persistence PageService is imported",
+    endpointText.contains("import com.atlassian.confluence.content.service.PageService"))
+ok("persistence SpaceService is imported",
+    endpointText.contains("import com.atlassian.confluence.content.service.SpaceService"))
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed
