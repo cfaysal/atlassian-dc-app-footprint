@@ -1097,6 +1097,74 @@ class AppFootprint {
     }
 }
 
+class ImpactAnalyzer {
+
+    static ImpactAssessment assessJira(
+        AppFootprint app,
+        boolean issueCounts,
+        boolean includeReach,
+        Long totalIssues,
+        Long totalProjects,
+        Long totalCustomFields,
+        Long totalActiveWorkflows,
+        boolean inventoryIncomplete
+    ) {
+        List<ImpactDimension> dimensions = new ArrayList<ImpactDimension>()
+        boolean incomplete = inventoryIncomplete
+
+        if (issueCounts) {
+            dimensions.add(new ImpactDimension(
+                "issueFieldAssociations", "Issue-field association density",
+                app.issueFieldAssociations, totalIssues, app.issueFieldAssociationsPartial))
+            incomplete = incomplete || app.issueFieldAssociationsPartial
+        }
+
+        if (includeReach) {
+            boolean projectReachPartial = false
+            for (WorkflowReference reference : app.workflowReferences) {
+                if (reference.reachState != Fp.MEASURED && reference.reachState != Fp.NOT_EVALUATED) {
+                    projectReachPartial = true
+                }
+            }
+            for (CustomFieldFootprint field : app.customFields) {
+                if (field.reachState != Fp.MEASURED && field.reachState != Fp.NOT_EVALUATED) {
+                    projectReachPartial = true
+                }
+            }
+            dimensions.add(new ImpactDimension(
+                "impactedProjects", "Project reach",
+                app.impactedProjectKeys.size(), totalProjects, projectReachPartial))
+            incomplete = incomplete || projectReachPartial
+
+            if (issueCounts) {
+                long impactedIssueCount = app.impactedIssues == null ? 0L : app.impactedIssues.longValue()
+                dimensions.add(new ImpactDimension(
+                    "impactedIssues", "Work item reach",
+                    impactedIssueCount, totalIssues, app.impactPartial))
+                incomplete = incomplete || app.impactPartial
+            }
+        }
+
+        dimensions.add(new ImpactDimension(
+            "customFields", "Custom field share",
+            app.customFields.size(), totalCustomFields, false))
+
+        boolean activeWorkflowPartial = false
+        for (WorkflowReference reference : app.workflowReferences) {
+            if (reference.active == null) {
+                activeWorkflowPartial = true
+                break
+            }
+        }
+        dimensions.add(new ImpactDimension(
+            "activeWorkflows", "Active workflow reach",
+            app.activeWorkflowCount, totalActiveWorkflows, activeWorkflowPartial))
+        incomplete = incomplete || activeWorkflowPartial
+
+        return ImpactPolicy.assess(dimensions, incomplete)
+    }
+}
+
 /* =============================================================================
  * Confluence page export - decision read
  * ========================================================================== */
@@ -2146,9 +2214,11 @@ appFootprint(
     /* ---- Custom fields: resolve every type key exactly once -------------- */
 
     List<CustomField> allCustomFields = new ArrayList<CustomField>()
+    boolean customFieldInventoryComplete = true
     try {
         allCustomFields.addAll(customFieldManager.getCustomFieldObjects())
     } catch (Exception error) {
+        customFieldInventoryComplete = false
         Fp.note(globalDiagnostics, "custom field inventory", error)
     }
 
@@ -2180,11 +2250,13 @@ appFootprint(
     /* ---- Workflow snapshots ---------------------------------------------- */
 
     Collection<JiraWorkflow> workflows = new ArrayList<JiraWorkflow>()
+    boolean workflowInventoryComplete = true
     try {
         workflows = includeDrafts ?
             workflowManager.getWorkflowsIncludingDrafts() :
             workflowManager.getWorkflows()
     } catch (Exception error) {
+        workflowInventoryComplete = false
         Fp.note(globalDiagnostics, "workflow inventory", error)
     }
 
@@ -2327,6 +2399,7 @@ appFootprint(
 
     /* Key to id, resolved once: the screen path knows only keys. */
     Map<String, Long> projectIdByKey = new HashMap<String, Long>()
+    boolean projectInventoryComplete = true
     if (includeReach) {
         try {
             for (Project project : ComponentAccessor.getProjectManager().getProjectObjects()) {
@@ -2335,7 +2408,19 @@ appFootprint(
                 }
             }
         } catch (Exception error) {
+            projectInventoryComplete = false
             Fp.note(globalDiagnostics, "project inventory", error)
+        }
+    }
+
+    Long totalIssues = null
+    boolean issueInventoryComplete = true
+    if (issueCounts) {
+        try {
+            totalIssues = Long.valueOf(issueManager.getIssueCount())
+        } catch (Exception error) {
+            issueInventoryComplete = false
+            Fp.note(globalDiagnostics, "issue inventory", error)
         }
     }
 
@@ -2728,7 +2813,48 @@ appFootprint(
 
     /* ---- Sort and summarise ------------------------------------------------ */
 
+    long activeWorkflowTotalValue = 0L
+    boolean activeWorkflowInventoryComplete = workflowInventoryComplete
+    boolean workflowDetectionComplete = workflowInventoryComplete
+    for (WorkflowSnapshot snapshot : workflowSnapshots) {
+        if (snapshot.active == Boolean.TRUE) {
+            activeWorkflowTotalValue++
+        } else if (snapshot.active == null) {
+            activeWorkflowInventoryComplete = false
+        }
+        if (!snapshot.diagnostics.isEmpty()) {
+            workflowDetectionComplete = false
+        }
+    }
+
+    Long totalProjects = includeReach && projectInventoryComplete ?
+        Long.valueOf(projectIdByKey.size()) : null
+    Long totalCustomFields = customFieldInventoryComplete ?
+        Long.valueOf(allCustomFields.size()) : null
+    Long totalActiveWorkflows = activeWorkflowInventoryComplete ?
+        Long.valueOf(activeWorkflowTotalValue) : null
+    boolean impactInventoryIncomplete = !customFieldInventoryComplete ||
+        !workflowDetectionComplete || (issueCounts && !issueInventoryComplete) ||
+        (includeReach && (!projectInventoryComplete || !screenReachAvailable || screenReachTruncated))
+
+    Map<String, ImpactAssessment> impacts = new HashMap<String, ImpactAssessment>()
+    for (AppFootprint app : apps) {
+        impacts.put(app.pluginKey, ImpactAnalyzer.assessJira(
+            app, issueCounts, includeReach, totalIssues, totalProjects,
+            totalCustomFields, totalActiveWorkflows, impactInventoryIncomplete))
+    }
+
     apps.sort { AppFootprint a, AppFootprint b ->
+        ImpactAssessment impactA = impacts.get(a.pluginKey)
+        ImpactAssessment impactB = impacts.get(b.pluginKey)
+        int byImpact = Integer.compare(impactB.rank, impactA.rank)
+        if (byImpact != 0) {
+            return byImpact
+        }
+        int byPercent = impactB.maxPercent.compareTo(impactA.maxPercent)
+        if (byPercent != 0) {
+            return byPercent
+        }
         int bySignals = Integer.compare(b.footprintSignals, a.footprintSignals)
         if (bySignals != 0) {
             return bySignals

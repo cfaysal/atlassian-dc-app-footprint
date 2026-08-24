@@ -551,6 +551,72 @@ check("impact map exposes maximum percentage",
 check("impact map exposes dimension evidence",
     ((List<Map<String, Object>>) relativeImpactMap.get("dimensions")).size(), 2)
 
+ImpactAssessment assessedApp = ImpactAnalyzer.assessJira(
+    app, true, false, Long.valueOf(1000L), null,
+    Long.valueOf(100L), Long.valueOf(10L), false)
+check("Jira highest product dimension wins", assessedApp.level, "MEDIUM")
+ok("Jira product reasons expose issue association density",
+    assessedApp.reasons.any { String reason -> reason.contains("Issue-field association density") })
+
+AppFootprint broadSmallInstance = new AppFootprint()
+for (int index = 0; index < 8; index++) {
+    CustomFieldFootprint field = new CustomFieldFootprint()
+    field.issuesWithValueState = Fp.MEASURED
+    field.issuesWithValue = Long.valueOf(0L)
+    broadSmallInstance.customFields.add(field)
+}
+broadSmallInstance.finish()
+ImpactAssessment broadSmallImpact = ImpactAnalyzer.assessJira(
+    broadSmallInstance, false, false, null, null,
+    Long.valueOf(10L), Long.valueOf(0L), false)
+check("eight of ten Jira custom fields is critical", broadSmallImpact.level, "CRITICAL")
+
+ImpactAssessment broadLargeImpact = ImpactAnalyzer.assessJira(
+    broadSmallInstance, false, false, null, null,
+    Long.valueOf(1000L), Long.valueOf(0L), false)
+check("eight of one thousand Jira custom fields is low", broadLargeImpact.level, "LOW")
+
+AppFootprint projectReachApp = new AppFootprint()
+projectReachApp.finish()
+projectReachApp.impactState = Fp.MEASURED
+projectReachApp.impactedProjectKeys.addAll(["A", "B", "C", "D", "E", "F", "G", "H"])
+ImpactAssessment projectReachImpact = ImpactAnalyzer.assessJira(
+    projectReachApp, false, true, null, Long.valueOf(10L),
+    Long.valueOf(100L), Long.valueOf(10L), false)
+check("eight of ten Jira projects is critical", projectReachImpact.level, "CRITICAL")
+
+AppFootprint partialZeroApp = new AppFootprint()
+partialZeroApp.workflowReferences.add(new WorkflowReference(name: "Unknown active state", active: null))
+partialZeroApp.finish()
+ImpactAssessment partialZeroAppImpact = ImpactAnalyzer.assessJira(
+    partialZeroApp, false, false, null, null,
+    Long.valueOf(100L), Long.valueOf(10L), false)
+check("partial Jira zero requires review", partialZeroAppImpact.level, "REVIEW_REQUIRED")
+
+ImpactAssessment emptyAppImpact = ImpactAnalyzer.assessJira(
+    empty, false, false, null, null,
+    Long.valueOf(100L), Long.valueOf(10L), false)
+check("complete Jira zero is no detectable footprint",
+    emptyAppImpact.level, "NO_DETECTABLE_FOOTPRINT")
+
+ImpactAssessment denominatorFailureImpact = ImpactAnalyzer.assessJira(
+    app, true, false, null, null,
+    Long.valueOf(100L), Long.valueOf(5L), true)
+check("failed Jira denominator keeps known high evidence",
+    denominatorFailureImpact.level, "HIGH")
+ok("failed Jira denominator marks result partial", denominatorFailureImpact.partial)
+
+File endpointSource = new File("jira/jiraDCappFootprint.groovy")
+if (!endpointSource.isFile()) {
+    endpointSource = new File("../jiraDCappFootprint.groovy")
+}
+ok("Jira impact contract can read the endpoint source", endpointSource.isFile())
+String endpointText = endpointSource.isFile() ? endpointSource.getText("UTF-8") : ""
+ok("Jira reads the instance issue denominator once",
+    endpointText.contains("issueManager.getIssueCount()"))
+ok("Jira integrates the instance-aware product analyzer",
+    endpointText.contains("ImpactAnalyzer.assessJira("))
+
 /* ---- N. space key validation (OP-950 Q1) --------------------------------- */
 
 /* The defect this replaces: the space key ran through cqlTerm(), which strips
