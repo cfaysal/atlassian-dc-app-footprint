@@ -414,6 +414,11 @@ ImpactAssessment cappedImpact = ImpactPolicy.assess([
 ], false)
 check("relative impact percentage is capped", cappedImpact.maxPercent.toPlainString(), "100.000000")
 
+ImpactDimension recurringPercent = new ImpactDimension(
+    "content", "Content reach", 1L, Long.valueOf(3L), false)
+ok("impact reason rounds recurring percentages",
+    recurringPercent.reason().contains("33.33%"))
+
 ImpactAssessment maxImpact = ImpactPolicy.assess([
     new ImpactDimension("content", "Content reach", 1L, 100L, false),
     new ImpactDimension("spaces", "Space reach", 6L, 10L, false)

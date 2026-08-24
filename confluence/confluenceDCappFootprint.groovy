@@ -543,7 +543,8 @@ class ImpactDimension {
     String reason() {
         StringBuilder out = new StringBuilder()
         out.append(label).append(": ").append(numerator).append(" of ")
-            .append(denominator).append(" (").append(percent().setScale(2)).append("%).")
+            .append(denominator).append(" (")
+            .append(percent().setScale(2, java.math.RoundingMode.HALF_UP)).append("%).")
         if (partial) {
             out.append(" This is a lower bound.")
         }

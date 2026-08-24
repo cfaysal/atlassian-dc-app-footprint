@@ -147,7 +147,7 @@ instance.
 
 ## Last recorded run
 
-2026-08-24: 329 assertions green, parse check green. Red-before-green measurement of the
+2026-08-24: 330 assertions green, parse check green. Red-before-green measurement of the
 same run: eight position cases, the create-only control refuses six moves and claims four
 parents the measurement does not confirm.
 

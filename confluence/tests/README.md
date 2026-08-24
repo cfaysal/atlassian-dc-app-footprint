@@ -170,7 +170,7 @@ the instance.
 
 ## Last recorded run
 
-2026-08-24: 535 assertions green, parse check green. Red-before-green measurement of the
+2026-08-24: 536 assertions green, parse check green. Red-before-green measurement of the
 same run: nine malformed fixtures, the parser refuses nine and the control refuses six;
 eight position cases, the create-only control refuses six moves and claims four parents the
 measurement does not confirm.
