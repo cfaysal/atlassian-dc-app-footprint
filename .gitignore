@@ -33,3 +33,6 @@ desktop.ini
 
 # Maintainer-local sync configuration, never published.
 .sync/
+
+# Isolated implementation workspaces.
+.worktrees/
