@@ -19,4 +19,3 @@ The Jira Workflow Footprint table renders ten columns. Four verbose, globally no
 - All ten columns remain visible when archived evidence is enabled.
 - Other Jira tables retain their existing layout.
 - Jira offline tests and the Groovy parse check remain green.
-

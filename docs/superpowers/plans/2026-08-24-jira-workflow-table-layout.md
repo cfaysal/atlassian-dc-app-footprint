@@ -56,4 +56,3 @@ Run: `bash.exe D:/CFcon-DEV/.runtime-cache/op962/run-offline-tests.sh parse`
 Run: `git diff --check`
 
 Expected: both scripts parse and the diff has no whitespace errors.
-
