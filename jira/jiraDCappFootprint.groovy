@@ -134,7 +134,7 @@ class Fp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "3.4"
+    static final String VERSION = "3.5"
 
     /* A needle can only occur inside a single token, so shorter tokens are
      * dropped. Needles below this length fall back to a raw scan. */
@@ -585,6 +585,14 @@ class Fp {
      * prefix, and the LONGEST matching plugin key wins: where com.acme.app and
      * com.acme.app.pro are both installed, the shorter key would otherwise
      * claim every module belonging to the longer one.
+     *
+     * The arg is written for POST FUNCTIONS ONLY. Measured on Jira 11.3.8:
+     * AddWorkflowTransitionFunctionParams and EditWorkflowTransitionPostFunctionParams
+     * write it, AddWorkflowTransitionConditionParams and
+     * AddWorkflowTransitionValidatorParams do not. An app condition or validator
+     * therefore reaches the descriptor carrying class.name and nothing else,
+     * which is why the class index below is not a nicety but the only path that
+     * finds them at all.
      */
     static String fullModuleOwner(String fullModuleKey, Collection<String> pluginKeys) {
         if (fullModuleKey == null || fullModuleKey.isEmpty() || pluginKeys == null) {
@@ -610,6 +618,41 @@ class Fp {
         }
         String remainder = fullModuleKey.substring(ownerPluginKey.length())
         return remainder.isEmpty() ? null : remainder
+    }
+
+    /*
+     * Ownership of one extension point, in the order the evidence deserves.
+     *
+     * This lives here rather than inline in the report body because it is the
+     * rule that was wrong once already: the class path was written off as an
+     * edge case for descriptor imports, when it is in fact the ONLY path that
+     * finds an app condition or validator.
+     */
+    static void resolveOwner(WorkflowExtension extension, Collection<String> pluginKeys,
+                             Map<String, String> implementationClassOwners,
+                             Map<String, String> moduleClassOwners) {
+        if (extension == null) {
+            return
+        }
+        String owner = fullModuleOwner(extension.fullModuleKey, pluginKeys)
+        if (owner != null) {
+            extension.ownerPluginKey = owner
+            extension.moduleKey = moduleKeyOf(extension.fullModuleKey, owner)
+            extension.attribution = BY_MODULE_KEY
+            return
+        }
+        if (extension.className == null) {
+            return
+        }
+        String byClass = implementationClassOwners == null ?
+            null : implementationClassOwners.get(extension.className)
+        if (byClass == null && moduleClassOwners != null) {
+            byClass = moduleClassOwners.get(extension.className)
+        }
+        if (byClass != null) {
+            extension.ownerPluginKey = byClass
+            extension.attribution = BY_MODULE_CLASS
+        }
     }
 
     /*
@@ -3526,6 +3569,22 @@ appFootprint(
     }
 
     List<AppFootprint> apps = new ArrayList<AppFootprint>()
+
+    /*
+     * Two class indexes, deliberately separate and consulted in this order.
+     *
+     * implementationClassOwners is authoritative: Jira writes class.name from
+     * AbstractWorkflowModuleDescriptor.getImplementationClass(), verified in the
+     * bytecode of all three writers (function, condition, validator params), so
+     * this is exactly the string that lands in a descriptor.
+     *
+     * moduleClassOwners is the weaker fallback. getModuleClass() often returns a
+     * FACTORY, and for a workflow module that factory frequently belongs to Jira
+     * rather than to the app: ScriptRunner's script-condition module reports
+     * com.atlassian.jira.plugin.workflow.WorkflowPluginConditionFactory. Trusting
+     * it first would hand a Jira class to whichever app registered it first.
+     */
+    Map<String, String> implementationClassOwners = new HashMap<String, String>()
     Map<String, String> moduleClassOwners = new HashMap<String, String>()
     Map<CustomFieldFootprint, CustomField> appCustomFieldSources =
         new LinkedHashMap<CustomFieldFootprint, CustomField>()
@@ -3615,6 +3674,19 @@ appFootprint(
                 }
             } catch (Throwable ignored) {
                 module.moduleClass = null
+            }
+
+            /*
+             * Only workflow module descriptors answer this, so the duck-typed
+             * call is also the type test. It is what makes an app condition or
+             * validator attributable at all.
+             */
+            Object implementation = Fp.safeCall(descriptor, "getImplementationClass")
+            if (implementation instanceof Class) {
+                String implementationName = ((Class) implementation).getName()
+                if (!implementationName.startsWith("java.") && !implementationName.startsWith("groovy.")) {
+                    implementationClassOwners.putIfAbsent(implementationName, app.pluginKey)
+                }
             }
 
             if (module.completeKey != null) {
@@ -4018,25 +4090,8 @@ appFootprint(
     }
 
     for (WorkflowExtension extension : allWorkflowExtensions) {
-        String owner = Fp.fullModuleOwner(extension.fullModuleKey, attributionPluginKeys)
-        if (owner != null) {
-            extension.ownerPluginKey = owner
-            extension.moduleKey = Fp.moduleKeyOf(extension.fullModuleKey, owner)
-            extension.attribution = Fp.BY_MODULE_KEY
-            continue
-        }
-        /*
-         * No full.module.key on this entry. Jira writes that arg whenever a
-         * plugin module is added through the admin UI, so what lands here is
-         * either a native function or one written straight into the descriptor
-         * by an import. The implementation class is the only handle left.
-         */
-        String byClass = extension.className == null ?
-            null : moduleClassOwners.get(extension.className)
-        if (byClass != null) {
-            extension.ownerPluginKey = byClass
-            extension.attribution = Fp.BY_MODULE_CLASS
-        }
+        Fp.resolveOwner(extension, attributionPluginKeys,
+            implementationClassOwners, moduleClassOwners)
     }
 
     Fp.markOrdering(allWorkflowExtensions)

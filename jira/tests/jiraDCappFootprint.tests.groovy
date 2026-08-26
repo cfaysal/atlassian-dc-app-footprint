@@ -1795,6 +1795,81 @@ check("an entry without args is still counted",
             actions: [new FakeAction(identifier: 1, label: "Go",
                 unconditional: new FakeResult(post: [new Object()]))])]), []).size(), 1)
 
+/* ---- attribution: the two-tier fallback --------------------------------- */
+
+/*
+ * Measured on Jira 11.3.8: only post functions carry full.module.key.
+ * AddWorkflowTransitionConditionParams and AddWorkflowTransitionValidatorParams
+ * write class.name and nothing else, both taking it from
+ * AbstractWorkflowModuleDescriptor.getImplementationClass(). A ScriptRunner
+ * condition therefore reaches the descriptor looking exactly like this.
+ */
+Map<String, String> implOwners = [
+    "com.onresolve.jira.groovy.GroovyCondition": "com.onresolve.jira.groovy.groovyrunner",
+    "com.onresolve.jira.groovy.GroovyValidator": "com.onresolve.jira.groovy.groovyrunner",
+]
+/*
+ * getModuleClass() on the same modules reports a JIRA factory, not an app class.
+ * Measured on the live instance: ScriptRunner's script-condition module reports
+ * com.atlassian.jira.plugin.workflow.WorkflowPluginConditionFactory.
+ */
+Map<String, String> factoryOwners = [
+    "com.atlassian.jira.plugin.workflow.WorkflowPluginConditionFactory": "com.onresolve.jira.groovy.groovyrunner",
+    "com.acme.app.LegacyThing": "com.acme.app",
+]
+List<String> installedKeys = ["com.onresolve.jira.groovy.groovyrunner", "com.acme.app"]
+
+WorkflowExtension srCondition = new WorkflowExtension(
+    kind: Fp.KIND_CONDITION,
+    className: "com.onresolve.jira.groovy.GroovyCondition")
+Fp.resolveOwner(srCondition, installedKeys, implOwners, factoryOwners)
+check("an app condition without full.module.key is still attributed",
+    srCondition.ownerPluginKey, "com.onresolve.jira.groovy.groovyrunner")
+check("and it is reported as a class match, not a module key match",
+    srCondition.attribution, Fp.BY_MODULE_CLASS)
+check("with no module key to show, because the class serves many modules",
+    srCondition.moduleKey, null)
+
+WorkflowExtension srValidator = new WorkflowExtension(
+    kind: Fp.KIND_VALIDATOR,
+    className: "com.onresolve.jira.groovy.GroovyValidator")
+Fp.resolveOwner(srValidator, installedKeys, implOwners, factoryOwners)
+check("an app validator is attributed the same way",
+    srValidator.ownerPluginKey, "com.onresolve.jira.groovy.groovyrunner")
+
+/* red before green: without the implementation index the class path finds nothing */
+WorkflowExtension withoutImplIndex = new WorkflowExtension(
+    kind: Fp.KIND_CONDITION,
+    className: "com.onresolve.jira.groovy.GroovyCondition")
+Fp.resolveOwner(withoutImplIndex, installedKeys, [:], factoryOwners)
+ok("the factory index alone cannot attribute a condition",
+    withoutImplIndex.ownerPluginKey == null)
+
+/* the module key path still wins where the arg exists */
+WorkflowExtension srPostFunction = new WorkflowExtension(
+    kind: Fp.KIND_POST_FUNCTION,
+    className: "com.onresolve.jira.groovy.GroovyFunctionPlugin",
+    fullModuleKey: "com.onresolve.jira.groovy.groovyrunnerscriptrunner-workflow-function-com.onresolve.scriptrunner.canned.jira.workflow.postfunctions.AddWatcher")
+Fp.resolveOwner(srPostFunction, installedKeys, implOwners, factoryOwners)
+check("a post function is attributed by its module key",
+    srPostFunction.attribution, Fp.BY_MODULE_KEY)
+check("and the module key survives the separatorless split",
+    srPostFunction.moduleKey,
+    "scriptrunner-workflow-function-com.onresolve.scriptrunner.canned.jira.workflow.postfunctions.AddWatcher")
+
+/* a native entry stays unattributed, which is what makes it count as foreign */
+WorkflowExtension nativeFunction = new WorkflowExtension(
+    kind: Fp.KIND_POST_FUNCTION,
+    className: "com.atlassian.jira.workflow.function.issue.UpdateIssueStatusFunction")
+Fp.resolveOwner(nativeFunction, installedKeys, implOwners, factoryOwners)
+ok("a native function belongs to no app", nativeFunction.ownerPluginKey == null)
+
+/* an entry with neither handle is left alone rather than guessed at */
+WorkflowExtension blank = new WorkflowExtension(kind: Fp.KIND_POST_FUNCTION)
+Fp.resolveOwner(blank, installedKeys, implOwners, factoryOwners)
+ok("an entry with no class and no module key is not attributed",
+    blank.ownerPluginKey == null && blank.attribution == null)
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed

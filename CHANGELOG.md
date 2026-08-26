@@ -13,6 +13,19 @@ published in this repository.
 
 ### Added
 
+- **Jira: app conditions and validators are attributed through the implementation class**
+  (`3.5`). Jira writes the `full.module.key` argument for post functions only, verified in the
+  bytecode of `AddWorkflowTransitionConditionParams` and `AddWorkflowTransitionValidatorParams`
+  on Jira 11.3.8: neither writes it. An app condition or validator therefore reaches the
+  descriptor carrying `class.name` alone. The class index is now built from
+  `AbstractWorkflowModuleDescriptor.getImplementationClass()`, the same value Jira writes into
+  that argument, so those extension points are found at all. Measured against a live instance:
+  a ScriptRunner condition and validator went from undetected to detected.
+- The class index deliberately prefers the implementation class over `getModuleClass()`, which
+  for a workflow module frequently reports a **Jira** factory rather than a class of the app
+  that registered it. Trusting the factory first would hand a Jira class to whichever app
+  registered it first.
+
 - **Jira: workflow extension points, per transition and per position** (`3.4`). The report
   now names every post function, condition, validator and pre function an app contributes
   to a workflow, together with the transition it sits in and its index inside that chain.

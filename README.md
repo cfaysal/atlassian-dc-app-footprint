@@ -10,7 +10,7 @@ These scripts measure that difference.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.4 |
+| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.5 |
 | [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.7 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
@@ -222,12 +222,19 @@ the report names the workflow, the scope (transition, global, initial, common, s
 transition, the kind of extension point, the app module behind it, and its position in its
 chain.
 
-An app is attributed through the `full.module.key` argument that Jira writes onto every
-extension point added through the admin UI. That value is the plugin key and the module key
+Attribution runs on two paths, and which one applied is printed in every row.
+
+The first is the `full.module.key` argument. That value is the plugin key and the module key
 **concatenated with no separator between them**, so it is matched by prefix and the longest
-matching plugin key wins. Where the argument is absent, which is what native Jira functions
-and descriptor imports look like, the implementation class is used instead. Each row says
-which of the two applied.
+matching plugin key wins. It gives the exact module of the app.
+
+The second is the implementation class, and it is not a fallback for rare cases. Jira writes
+`full.module.key` for **post functions only**: conditions and validators reach the descriptor
+carrying `class.name` and nothing else. Every app condition and every app validator is found
+through the class path or not at all. The class index is built from
+`AbstractWorkflowModuleDescriptor.getImplementationClass()`, which is exactly the string Jira
+writes into `class.name`. Since one class often serves many modules, those rows name the class
+rather than a module key.
 
 From that, the report derives one number worth acting on: an **ordering dependency**. A post
 function of the app is flagged when at least one post function from another provider runs
@@ -238,6 +245,10 @@ another platform.
 
 The walk runs for every workflow, independent of the text scan, and it costs no extra
 retrieval: it reads the descriptor graph the script already holds in memory.
+
+One thing it deliberately does not do is invent a module name. A condition contributed through
+a shared implementation class is reported with that class, marked as a class match, and left
+without a module key, because the descriptor does not carry one.
 
 ## Instance-relative impact
 
