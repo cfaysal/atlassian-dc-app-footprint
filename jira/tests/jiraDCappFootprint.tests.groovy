@@ -906,13 +906,21 @@ int customFieldSection = endpointText.indexOf('<div class="section-title">Custom
 int workflowSection = endpointText.indexOf('<div class="section-title">Workflow Footprint</div>')
 int customFieldTable = endpointText.indexOf('<table class="footprint-table">', customFieldSection)
 int workflowTable = endpointText.indexOf('<table class="footprint-table">', workflowSection)
+int extensionSection = endpointText.indexOf('<div class="section-title">Workflow Extension Points</div>')
+int extensionTable = endpointText.indexOf('<table class="footprint-table">', extensionSection)
 ok("Jira Custom Field Footprint uses the shared fixed-layout table",
     customFieldSection >= 0 && workflowSection > customFieldSection &&
     customFieldTable > customFieldSection && customFieldTable < workflowSection)
 ok("Jira Workflow Footprint uses the shared fixed-layout table",
-    workflowTable > workflowSection &&
-    endpointText.count('<table class="footprint-table">') == 2 &&
+    workflowTable > workflowSection && workflowTable < extensionSection &&
     endpointText.contains('.footprint-table { table-layout: fixed; }'))
+ok("Jira Workflow Extension Points uses the shared fixed-layout table",
+    extensionSection > workflowSection && extensionTable > extensionSection)
+/* Every footprint table shares the fixed-layout class - the count is the guard
+ * that a new one cannot quietly ship with its own width behaviour. */
+ok("no footprint table escapes the shared layout class",
+    endpointText.count('<table class="footprint-table">') == 3 &&
+    endpointText.count('<table class="') == 3)
 ok("Jira wide footprint tables wrap headers and long cell values locally",
     endpointText.contains('.footprint-table th { white-space: normal;') &&
     endpointText.contains('.footprint-table td { overflow-wrap: anywhere; }'))
@@ -1497,6 +1505,295 @@ ok("the single-class control cannot express either variant", diagColourDiffs == 
 ok("the control paints an observation-only box the same as a degraded one",
     controlDiagClass(0, 0, false, 0) == controlDiagClass(2, 4, true, 7) &&
     Fp.diagClass(0, 0, false, 0) != Fp.diagClass(2, 4, true, 7))
+
+/* ---- workflow extension points: fake descriptor graph -------------------- */
+
+/*
+ * The walk is duck-typed, so the fakes only need the getters it actually calls.
+ * What must NOT be present matters just as much: a plain condition and a result
+ * must not answer getConditions(), or isConditionGroup would misread them as
+ * nested groups.
+ */
+class FakeFn {
+    String kind = "class"
+    Map args = [:]
+    String getType() { return kind }
+    Map getArgs() { return args }
+}
+
+class FakeCond {
+    String kind = "class"
+    Map args = [:]
+    String getType() { return kind }
+    Map getArgs() { return args }
+}
+
+class FakeCondGroup {
+    String kind = "AND"
+    List members = []
+    String getType() { return kind }
+    List getConditions() { return members }
+}
+
+class FakeResult {
+    List post = []
+    List pre = []
+    List vals = []
+    List getPostFunctions() { return post }
+    List getPreFunctions() { return pre }
+    List getValidators() { return vals }
+}
+
+class FakeCondResult extends FakeResult {
+    List conds = []
+    List getConditions() { return conds }
+}
+
+class FakeRestriction {
+    Object group
+    Object getConditionsDescriptor() { return group }
+}
+
+class FakeAction {
+    int identifier = 0
+    String label = ""
+    List vals = []
+    List pre = []
+    List post = []
+    Object restriction
+    Object unconditional
+    List conditional = []
+    int getId() { return identifier }
+    String getName() { return label }
+    List getValidators() { return vals }
+    List getPreFunctions() { return pre }
+    List getPostFunctions() { return post }
+    Object getRestriction() { return restriction }
+    Object getUnconditionalResult() { return unconditional }
+    List getConditionalResults() { return conditional }
+}
+
+class FakeStep {
+    int identifier = 0
+    String label = ""
+    List actions = []
+    List pre = []
+    List post = []
+    int getId() { return identifier }
+    String getName() { return label }
+    List getActions() { return actions }
+    List getPreFunctions() { return pre }
+    List getPostFunctions() { return post }
+}
+
+class FakeWorkflowDescriptor {
+    List steps = []
+    List initial = []
+    List global = []
+    Map common = [:]
+    Object globalConditions
+    List getSteps() { return steps }
+    List getInitialActions() { return initial }
+    List getGlobalActions() { return global }
+    Map getCommonActions() { return common }
+    Object getGlobalConditions() { return globalConditions }
+}
+
+def fn = { String className, String moduleKey ->
+    FakeFn f = new FakeFn()
+    f.args = moduleKey == null ?
+        ["class.name": className] :
+        ["class.name": className, "full.module.key": moduleKey]
+    return f
+}
+
+/* ---- attribution: full.module.key carries no separator ------------------- */
+
+/*
+ * The value below is verbatim from the workflow Jira ships in
+ * WEB-INF/classes/jira-workflow.xml. Plugin key and module key sit flush
+ * against each other, which is why the split-on-colon reflex is wrong.
+ */
+String shippedValue = "com.atlassian.jira.plugin.system.workflowassigntocurrentuser-function"
+String systemWorkflowPlugin = "com.atlassian.jira.plugin.system.workflow"
+
+check("owner of the shipped Jira value",
+    Fp.fullModuleOwner(shippedValue, [systemWorkflowPlugin, "com.example.other"]),
+    systemWorkflowPlugin)
+check("module key of the shipped Jira value",
+    Fp.moduleKeyOf(shippedValue, systemWorkflowPlugin),
+    "assigntocurrentuser-function")
+
+ok("the shipped value carries no colon at all", !shippedValue.contains(":"))
+
+/* red before green: the reflex implementation, and what it would have done */
+def splitOnColon = { String value ->
+    int at = value == null ? -1 : value.indexOf(":")
+    return at < 0 ? null : value.substring(0, at)
+}
+ok("split-on-colon finds no owner where the prefix match finds one",
+    splitOnColon(shippedValue) == null &&
+    Fp.fullModuleOwner(shippedValue, [systemWorkflowPlugin]) == systemWorkflowPlugin)
+
+check("longest plugin key wins over a shorter one that prefixes it",
+    Fp.fullModuleOwner("com.acme.app.propost-fn", ["com.acme.app", "com.acme.app.pro"]),
+    "com.acme.app.pro")
+check("remainder after the longest key",
+    Fp.moduleKeyOf("com.acme.app.propost-fn", "com.acme.app.pro"), "post-fn")
+check("no owner when nothing matches",
+    Fp.fullModuleOwner("com.other.thing-fn", ["com.acme.app"]), null)
+check("no owner for a null value", Fp.fullModuleOwner(null, ["com.acme.app"]), null)
+check("no owner without candidates", Fp.fullModuleOwner("com.acme.appx", null), null)
+check("empty candidate keys are ignored",
+    Fp.fullModuleOwner("com.acme.appx", ["", null, "com.acme.app"]), "com.acme.app")
+check("module key is null when the key is the whole value",
+    Fp.moduleKeyOf("com.acme.app", "com.acme.app"), null)
+
+/* ---- one chain, positions and length ------------------------------------- */
+
+FakeAction transition = new FakeAction()
+transition.identifier = 11
+transition.label = "Start Progress"
+FakeResult unconditional = new FakeResult()
+unconditional.post = [
+    fn("com.atlassian.jira.workflow.function.issue.UpdateIssueStatusFunction", null),
+    fn("com.acme.app.AcmePostFunction", "com.acme.appacme-post-fn"),
+    fn("com.atlassian.jira.workflow.function.issue.GenerateChangeHistoryFunction", null),
+]
+transition.unconditional = unconditional
+
+List<WorkflowExtension> walked = Fp.walkWorkflow(null,
+    new FakeWorkflowDescriptor(steps: [new FakeStep(identifier: 1, label: "Open", actions: [transition])]),
+    [])
+
+check("three post functions found", walked.size(), 3)
+check("the app function sits second", walked[1].position, 2)
+check("chain length is carried on every entry", walked[1].chainLength, 3)
+check("transition name is carried", walked[1].transitionName, "Start Progress")
+check("transition id is carried", walked[1].transitionId, Integer.valueOf(11))
+check("kind is the post function kind", walked[1].kind, Fp.KIND_POST_FUNCTION)
+check("the module key arg is read", walked[1].fullModuleKey, "com.acme.appacme-post-fn")
+check("a native function has no module key arg", walked[0].fullModuleKey, null)
+
+/* ---- ordering: what runs behind the app function ------------------------- */
+
+walked.each { WorkflowExtension e ->
+    e.workflowName = "Acme Workflow"
+    String owner = Fp.fullModuleOwner(e.fullModuleKey, ["com.acme.app"])
+    e.ownerPluginKey = owner
+    e.attribution = owner == null ? null : Fp.BY_MODULE_KEY
+}
+Fp.markOrdering(walked)
+
+check("one native function runs behind the app function", walked[1].followedBy, 1)
+check("and it belongs to another provider", walked[1].followedByOther, 1)
+ok("so the app function is flagged as an ordering dependency", walked[1].orderingRisk)
+ok("the last entry in the chain is never flagged", !walked[2].orderingRisk)
+check("the last entry has nothing behind it", walked[2].followedBy, 0)
+
+/* an app function at the end of the chain carries no ordering dependency */
+FakeAction tail = new FakeAction(identifier: 21, label: "Resolve")
+tail.unconditional = new FakeResult(post: [
+    fn("com.atlassian.jira.workflow.function.issue.UpdateIssueStatusFunction", null),
+    fn("com.acme.app.AcmePostFunction", "com.acme.appacme-post-fn"),
+])
+List<WorkflowExtension> tailWalk = Fp.walkWorkflow(null,
+    new FakeWorkflowDescriptor(steps: [new FakeStep(identifier: 1, label: "Open", actions: [tail])]), [])
+tailWalk.each { WorkflowExtension e ->
+    e.workflowName = "Acme Workflow"
+    e.ownerPluginKey = Fp.fullModuleOwner(e.fullModuleKey, ["com.acme.app"])
+}
+Fp.markOrdering(tailWalk)
+ok("an app post function that runs last is not an ordering dependency",
+    !tailWalk[1].orderingRisk && tailWalk[1].followedBy == 0)
+
+/* ---- conditional branches are separate chains ---------------------------- */
+
+FakeAction branched = new FakeAction(identifier: 31, label: "Branch")
+branched.unconditional = new FakeResult(post: [fn("com.acme.app.One", "com.acme.appone")])
+FakeCondResult branchOne = new FakeCondResult()
+branchOne.post = [fn("com.acme.app.Two", "com.acme.apptwo")]
+branched.conditional = [branchOne]
+
+List<WorkflowExtension> branchWalk = Fp.walkWorkflow(null,
+    new FakeWorkflowDescriptor(steps: [new FakeStep(identifier: 1, label: "Open", actions: [branched])]), [])
+branchWalk.each { WorkflowExtension e ->
+    e.workflowName = "Branchy"
+    e.ownerPluginKey = Fp.fullModuleOwner(e.fullModuleKey, ["com.acme.app"])
+}
+Fp.markOrdering(branchWalk)
+
+check("both branches are walked", branchWalk.size(), 2)
+ok("the two branches are not the same chain", branchWalk[0].chain != branchWalk[1].chain)
+ok("nothing is reported as running behind across a branch boundary",
+    branchWalk[0].followedBy == 0 && branchWalk[1].followedBy == 0)
+
+/* ---- nested condition groups --------------------------------------------- */
+
+FakeCondGroup inner = new FakeCondGroup(kind: "OR", members: [
+    new FakeCond(args: ["class.name": "com.acme.app.CondA", "full.module.key": "com.acme.appcond-a"]),
+    new FakeCond(args: ["class.name": "com.acme.app.CondB", "full.module.key": "com.acme.appcond-b"]),
+])
+FakeCondGroup outer = new FakeCondGroup(kind: "AND", members: [
+    new FakeCond(args: ["class.name": "com.acme.app.CondTop", "full.module.key": "com.acme.appcond-top"]),
+    inner,
+])
+FakeAction gated = new FakeAction(identifier: 41, label: "Gated")
+gated.restriction = new FakeRestriction(group: outer)
+
+List<WorkflowExtension> condWalk = Fp.walkWorkflow(null,
+    new FakeWorkflowDescriptor(steps: [new FakeStep(identifier: 1, label: "Open", actions: [gated])]), [])
+
+check("every condition is found once, nesting included", condWalk.size(), 3)
+check("all three are conditions",
+    condWalk.count { WorkflowExtension e -> e.kind == Fp.KIND_CONDITION }, 3)
+ok("the nested group is reported under its own chain path",
+    condWalk.any { WorkflowExtension e -> e.chain.contains("group 1") })
+ok("the top level condition is not inside the nested path",
+    condWalk.find { WorkflowExtension e -> e.className == "com.acme.app.CondTop" }
+        .chain.contains("group 1") == false)
+check("the top level condition is alone in its own chain",
+    condWalk.find { WorkflowExtension e -> e.className == "com.acme.app.CondTop" }.chainLength, 1)
+
+/* ---- a common action is counted once, not once per step ------------------ */
+
+FakeAction common = new FakeAction(identifier: 51, label: "Common Transition")
+common.unconditional = new FakeResult(post: [fn("com.acme.app.Shared", "com.acme.appshared")])
+FakeWorkflowDescriptor shared = new FakeWorkflowDescriptor(
+    common: [51: common],
+    steps: [
+        new FakeStep(identifier: 1, label: "Open", actions: [common]),
+        new FakeStep(identifier: 2, label: "In Progress", actions: [common]),
+        new FakeStep(identifier: 3, label: "Done", actions: [common]),
+    ])
+List<WorkflowExtension> sharedWalk = Fp.walkWorkflow(null, shared, [])
+check("a common action referenced by three steps is reported once", sharedWalk.size(), 1)
+
+/* ---- step level and global conditions are not silently dropped ----------- */
+
+FakeWorkflowDescriptor withStepFns = new FakeWorkflowDescriptor(
+    steps: [new FakeStep(identifier: 1, label: "Open",
+        post: [fn("com.acme.app.StepFn", "com.acme.appstep-fn")])],
+    globalConditions: new FakeCondGroup(kind: "AND",
+        members: [new FakeCond(args: ["class.name": "com.acme.app.GlobalCond",
+                                      "full.module.key": "com.acme.appglobal-cond"])]))
+List<WorkflowExtension> edgeWalk = Fp.walkWorkflow(null, withStepFns, [])
+check("step post function and global condition are both found", edgeWalk.size(), 2)
+ok("the step function keeps the step scope",
+    edgeWalk.any { WorkflowExtension e -> e.scope == "Step" && e.kind == Fp.KIND_POST_FUNCTION })
+ok("the global condition keeps the workflow scope",
+    edgeWalk.any { WorkflowExtension e -> e.scope == "Workflow" && e.kind == Fp.KIND_CONDITION })
+
+/* ---- the walk never throws on a broken graph ----------------------------- */
+
+check("a null descriptor yields nothing", Fp.walkWorkflow(null, null, []).size(), 0)
+check("an empty descriptor yields nothing",
+    Fp.walkWorkflow(null, new FakeWorkflowDescriptor(), []).size(), 0)
+check("an entry without args is still counted",
+    Fp.walkWorkflow(null, new FakeWorkflowDescriptor(
+        steps: [new FakeStep(identifier: 1, label: "Open",
+            actions: [new FakeAction(identifier: 1, label: "Go",
+                unconditional: new FakeResult(post: [new Object()]))])]), []).size(), 1)
 
 /* ---- result --------------------------------------------------------------- */
 

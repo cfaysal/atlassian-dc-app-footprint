@@ -10,7 +10,7 @@ These scripts measure that difference.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.3 |
+| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.4 |
 | [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.7 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
@@ -188,8 +188,17 @@ Read this before quoting a number to a customer.
 
 **Jira** measures configuration reach: extension modules per app, app-provided custom
 fields and the number of Issues carrying a value in them, screen and screen-scheme
-placements, and workflow references including post-functions, conditions and validators.
-Active and archived Projects and Issues are measured separately. Archived-only evidence
+placements, and two separate views of the workflows.
+
+The first is the **workflow reference** count: how often an app appears anywhere in a
+persisted workflow descriptor, plus the Projects and Issues that run through that
+workflow. It answers "is this app in there at all", including in places that are not
+extension points, such as meta attributes and argument values.
+
+The second is the **extension point** inventory, and it is the one a migration decision
+rests on: every post function, condition, validator and pre function the app contributes,
+pinned to the transition it sits in and to its index inside that chain. Active and
+archived Projects and Issues are measured separately. Archived-only evidence
 is `LEGACY_ONLY`, while an omitted or incomplete archive split is `REVIEW_REQUIRED` for an
 otherwise empty current footprint. Issue counting is the expensive part and is the
 reason `issueBudgetMs` exists.
@@ -205,6 +214,30 @@ counted from the search index. Two rules govern how that number is reported:
   would inflate that app's footprint with work it never did.
 
 Partial results are marked with an asterisk and are lower bounds, not estimates.
+
+### Workflow extension points and ordering
+
+Every workflow is walked structurally, not just searched as text. For each extension point
+the report names the workflow, the scope (transition, global, initial, common, step), the
+transition, the kind of extension point, the app module behind it, and its position in its
+chain.
+
+An app is attributed through the `full.module.key` argument that Jira writes onto every
+extension point added through the admin UI. That value is the plugin key and the module key
+**concatenated with no separator between them**, so it is matched by prefix and the longest
+matching plugin key wins. Where the argument is absent, which is what native Jira functions
+and descriptor imports look like, the implementation class is used instead. Each row says
+which of the two applied.
+
+From that, the report derives one number worth acting on: an **ordering dependency**. A post
+function of the app is flagged when at least one post function from another provider runs
+after it in the same chain. Post functions in different conditional branches never share a
+chain and are never compared. On Data Center that chain runs in order, synchronously, as
+part of the transition, which is exactly the assumption that does not survive every move to
+another platform.
+
+The walk runs for every workflow, independent of the text scan, and it costs no extra
+retrieval: it reads the descriptor graph the script already holds in memory.
 
 ## Instance-relative impact
 

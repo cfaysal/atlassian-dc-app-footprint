@@ -134,7 +134,7 @@ class Fp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "3.3"
+    static final String VERSION = "3.4"
 
     /* A needle can only occur inside a single token, so shorter tokens are
      * dropped. Needles below this length fall back to a raw scan. */
@@ -514,6 +514,376 @@ class Fp {
         return total
     }
 
+    /* ---- workflow extension points --------------------------------------- */
+
+    /*
+     * The descriptor graph is already in memory: Jira hands it out of its own
+     * workflow cache, and the token scan further down serialises that very same
+     * graph to get its XML. Walking it therefore fetches nothing, it only
+     * traverses what the script already holds.
+     *
+     * Everything here is duck-typed on purpose. The OSWorkflow descriptor
+     * classes are never imported, so Fp stays loadable - and testable - without
+     * Jira on the classpath, which is the contract the rest of this class keeps.
+     */
+
+    static final String KIND_POST_FUNCTION = "Post Function"
+    static final String KIND_PRE_FUNCTION = "Pre Function"
+    static final String KIND_CONDITION = "Condition"
+    static final String KIND_VALIDATOR = "Validator"
+
+    static final String ARG_CLASS_NAME = "class.name"
+    static final String ARG_FULL_MODULE_KEY = "full.module.key"
+
+    static final String BY_MODULE_KEY = "Module key"
+    static final String BY_MODULE_CLASS = "Module class"
+
+    static Object safeCall(Object owner, String getter) {
+        if (owner == null) {
+            return null
+        }
+        try {
+            return owner."$getter"()
+        } catch (Throwable ignored) {
+            return null
+        }
+    }
+
+    static List<Object> listOf(Object owner, String getter) {
+        Object value = safeCall(owner, getter)
+        return value instanceof List ? (List<Object>) value : null
+    }
+
+    static String nullSafe(String value) {
+        return value == null ? "" : value
+    }
+
+    static Integer intOf(Object owner, String getter) {
+        Object raw = safeCall(owner, getter)
+        return raw instanceof Number ? Integer.valueOf(((Number) raw).intValue()) : null
+    }
+
+    static String argOf(Object descriptor, String name) {
+        Object args = safeCall(descriptor, "getArgs")
+        if (!(args instanceof Map)) {
+            return null
+        }
+        Object value = ((Map) args).get(name)
+        return value == null ? null : value.toString()
+    }
+
+    /*
+     * full.module.key carries the plugin key and the module key concatenated
+     * with NO separator between them. AbstractWorkflowAction.getFullModuleKey
+     * builds it through makeConcatWithConstants, whose recipe is two
+     * placeholders and no literal text at all, and the workflow Jira itself
+     * ships proves it: plugin key com.atlassian.jira.plugin.system.workflow plus
+     * module key assigntocurrentuser-function reads, in the descriptor,
+     * com.atlassian.jira.plugin.system.workflowassigntocurrentuser-function.
+     *
+     * The value therefore cannot be split on a separator. It is matched by
+     * prefix, and the LONGEST matching plugin key wins: where com.acme.app and
+     * com.acme.app.pro are both installed, the shorter key would otherwise
+     * claim every module belonging to the longer one.
+     */
+    static String fullModuleOwner(String fullModuleKey, Collection<String> pluginKeys) {
+        if (fullModuleKey == null || fullModuleKey.isEmpty() || pluginKeys == null) {
+            return null
+        }
+        String best = null
+        for (String candidate : pluginKeys) {
+            if (candidate == null || candidate.isEmpty()) {
+                continue
+            }
+            if (fullModuleKey.startsWith(candidate) &&
+                (best == null || candidate.length() > best.length())) {
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    static String moduleKeyOf(String fullModuleKey, String ownerPluginKey) {
+        if (fullModuleKey == null || ownerPluginKey == null ||
+            !fullModuleKey.startsWith(ownerPluginKey)) {
+            return null
+        }
+        String remainder = fullModuleKey.substring(ownerPluginKey.length())
+        return remainder.isEmpty() ? null : remainder
+    }
+
+    /*
+     * One chain, in document order. The index is the whole point of this walk:
+     * a post function that is not last has something running behind it, and on
+     * Data Center that something runs synchronously, in exactly this position.
+     */
+    static void readChain(List<Object> entries, String kind, String chain, String scope,
+                          Integer transitionId, String transitionName,
+                          List<WorkflowExtension> sink) {
+        if (entries == null || entries.isEmpty()) {
+            return
+        }
+        int length = entries.size()
+        for (int index = 0; index < length; index++) {
+            Object entry = entries.get(index)
+            if (entry == null) {
+                continue
+            }
+            WorkflowExtension extension = new WorkflowExtension()
+            extension.kind = kind
+            extension.chain = chain
+            extension.scope = scope
+            extension.transitionId = transitionId
+            extension.transitionName = transitionName
+            extension.position = index + 1
+            extension.chainLength = length
+            extension.type = (String) safeCall(entry, "getType")
+            extension.className = argOf(entry, ARG_CLASS_NAME)
+            extension.fullModuleKey = argOf(entry, ARG_FULL_MODULE_KEY)
+            sink.add(extension)
+        }
+    }
+
+    static boolean isConditionGroup(Object candidate) {
+        return safeCall(candidate, "getConditions") instanceof List
+    }
+
+    /*
+     * Conditions nest. A ConditionsDescriptor holds either plain conditions or
+     * further groups, which is how the AND / OR blocks of a transition are
+     * expressed. The path label keeps that nesting visible rather than
+     * flattening it, because a condition inside an OR branch does not gate the
+     * transition the way a top-level one does.
+     */
+    static void readConditions(Object group, String chain, String scope,
+                               Integer transitionId, String transitionName,
+                               List<WorkflowExtension> sink, int depth) {
+        if (group == null || depth > 12) {
+            return
+        }
+        List members = (List) safeCall(group, "getConditions")
+        if (members == null || members.isEmpty()) {
+            return
+        }
+        String groupType = (String) safeCall(group, "getType")
+        String label = groupType == null || groupType.isEmpty() ? chain : chain + " (" + groupType + ")"
+
+        List<Object> leaves = new ArrayList<Object>()
+        List<Object> nested = new ArrayList<Object>()
+        for (Object member : members) {
+            if (member == null) {
+                continue
+            }
+            if (isConditionGroup(member)) {
+                nested.add(member)
+            } else {
+                leaves.add(member)
+            }
+        }
+        readChain(leaves, KIND_CONDITION, label, scope, transitionId, transitionName, sink)
+        int branch = 0
+        for (Object child : nested) {
+            branch++
+            readConditions(child, label + " / group " + branch, scope,
+                transitionId, transitionName, sink, depth + 1)
+        }
+    }
+
+    static void readResult(Object result, String chain, String scope,
+                           Integer transitionId, String transitionName,
+                           List<WorkflowExtension> sink) {
+        if (result == null) {
+            return
+        }
+        readChain(listOf(result, "getPreFunctions"), KIND_PRE_FUNCTION, chain + " pre-functions",
+            scope, transitionId, transitionName, sink)
+        readChain(listOf(result, "getValidators"), KIND_VALIDATOR, chain + " validators",
+            scope, transitionId, transitionName, sink)
+        readChain(listOf(result, "getPostFunctions"), KIND_POST_FUNCTION, chain + " post-functions",
+            scope, transitionId, transitionName, sink)
+    }
+
+    static void readAction(Object action, String scope, List<WorkflowExtension> sink) {
+        if (action == null) {
+            return
+        }
+        Integer transitionId = intOf(action, "getId")
+        String transitionName = (String) safeCall(action, "getName")
+
+        readChain(listOf(action, "getValidators"), KIND_VALIDATOR, "transition validators",
+            scope, transitionId, transitionName, sink)
+        readChain(listOf(action, "getPreFunctions"), KIND_PRE_FUNCTION, "transition pre-functions",
+            scope, transitionId, transitionName, sink)
+        readChain(listOf(action, "getPostFunctions"), KIND_POST_FUNCTION, "transition post-functions",
+            scope, transitionId, transitionName, sink)
+
+        readConditions(safeCall(safeCall(action, "getRestriction"), "getConditionsDescriptor"),
+            "transition conditions", scope, transitionId, transitionName, sink, 0)
+
+        readResult(safeCall(action, "getUnconditionalResult"), "unconditional result",
+            scope, transitionId, transitionName, sink)
+
+        List<Object> conditional = listOf(action, "getConditionalResults")
+        if (conditional != null) {
+            int branch = 0
+            for (Object result : conditional) {
+                branch++
+                String chain = "conditional result " + branch
+                readConditions(result, chain + " conditions", scope,
+                    transitionId, transitionName, sink, 0)
+                readResult(result, chain, scope, transitionId, transitionName, sink)
+            }
+        }
+    }
+
+    static void collectActions(Collection<Object> source, Set<Integer> seen, List<Object> sink) {
+        if (source == null) {
+            return
+        }
+        for (Object action : source) {
+            if (action == null) {
+                continue
+            }
+            Integer id = intOf(action, "getId")
+            if (id != null && !seen.add(id)) {
+                continue
+            }
+            sink.add(action)
+        }
+    }
+
+    /*
+     * Fallback for the case where the JiraWorkflow itself is unavailable - the
+     * tests run this path. A common action is referenced by every step that
+     * offers it, so the identity set is what keeps it from being counted twice.
+     */
+    static List<Object> descriptorActions(Object descriptor) {
+        List<Object> actions = new ArrayList<Object>()
+        Set<Integer> seen = new HashSet<Integer>()
+        collectActions(listOf(descriptor, "getInitialActions"), seen, actions)
+        collectActions(listOf(descriptor, "getGlobalActions"), seen, actions)
+        Object common = safeCall(descriptor, "getCommonActions")
+        if (common instanceof Map) {
+            collectActions(((Map) common).values(), seen, actions)
+        }
+        List<Object> steps = listOf(descriptor, "getSteps")
+        if (steps != null) {
+            for (Object step : steps) {
+                collectActions(listOf(step, "getActions"), seen, actions)
+            }
+        }
+        return actions
+    }
+
+    static String scopeOf(Object workflow, Object action) {
+        if (workflow == null || action == null) {
+            return "Transition"
+        }
+        try {
+            if (workflow.isInitialAction(action)) {
+                return "Initial"
+            }
+            if (workflow.isGlobalAction(action)) {
+                return "Global"
+            }
+            if (workflow.isCommonAction(action)) {
+                return "Common"
+            }
+        } catch (Throwable ignored) {
+            return "Transition"
+        }
+        return "Transition"
+    }
+
+    static List<WorkflowExtension> walkWorkflow(Object workflow, Object descriptor,
+                                                List<String> diagnostics) {
+        List<WorkflowExtension> sink = new ArrayList<WorkflowExtension>()
+        if (descriptor == null) {
+            return sink
+        }
+
+        /*
+         * getAllActions() is Jira's own deduplicated view over ordinary, global,
+         * initial and common actions. Walking the steps by hand would report a
+         * common action once per step that references it.
+         */
+        Collection actions = null
+        if (workflow != null) {
+            try {
+                actions = (Collection) workflow.getAllActions()
+            } catch (Throwable error) {
+                note(diagnostics, "transition inventory", error)
+            }
+        }
+        if (actions == null) {
+            actions = descriptorActions(descriptor)
+        }
+        for (Object action : actions) {
+            readAction(action, scopeOf(workflow, action), sink)
+        }
+
+        /* Step level functions are rare in practice, but they exist and they run. */
+        List<Object> steps = listOf(descriptor, "getSteps")
+        if (steps != null) {
+            for (Object step : steps) {
+                Integer stepId = intOf(step, "getId")
+                String stepName = (String) safeCall(step, "getName")
+                readChain(listOf(step, "getPreFunctions"), KIND_PRE_FUNCTION, "step pre-functions",
+                    "Step", stepId, stepName, sink)
+                readChain(listOf(step, "getPostFunctions"), KIND_POST_FUNCTION, "step post-functions",
+                    "Step", stepId, stepName, sink)
+            }
+        }
+
+        readConditions(safeCall(descriptor, "getGlobalConditions"), "global conditions",
+            "Workflow", null, null, sink, 0)
+
+        return sink
+    }
+
+    /*
+     * Ordering, computed once ownership is known. "Followed by other" counts the
+     * entries behind this one in the SAME chain that a different owner provides,
+     * native Jira functions included - that is the dependency a migration off
+     * Data Center has to reason about. Entries from separate conditional
+     * branches never share a chain, so they are never compared.
+     */
+    static void markOrdering(List<WorkflowExtension> extensions) {
+        if (extensions == null || extensions.isEmpty()) {
+            return
+        }
+        Map<String, List<WorkflowExtension>> chains = new LinkedHashMap<String, List<WorkflowExtension>>()
+        for (WorkflowExtension extension : extensions) {
+            String key = extension.workflowName + " " + extension.transitionId +
+                " " + extension.scope + " " + extension.chain
+            List<WorkflowExtension> bucket = chains.get(key)
+            if (bucket == null) {
+                bucket = new ArrayList<WorkflowExtension>()
+                chains.put(key, bucket)
+            }
+            bucket.add(extension)
+        }
+        for (List<WorkflowExtension> bucket : chains.values()) {
+            bucket.sort { WorkflowExtension a, WorkflowExtension b ->
+                Integer.compare(a.position, b.position)
+            }
+            int size = bucket.size()
+            for (int index = 0; index < size; index++) {
+                WorkflowExtension current = bucket.get(index)
+                current.followedBy = size - index - 1
+                int foreign = 0
+                for (int later = index + 1; later < size; later++) {
+                    String otherOwner = bucket.get(later).ownerPluginKey
+                    if (otherOwner == null || otherOwner != current.ownerPluginKey) {
+                        foreign++
+                    }
+                }
+                current.followedByOther = foreign
+                current.orderingRisk = KIND_POST_FUNCTION == current.kind && foreign > 0
+            }
+        }
+    }
+
     /* ---- module categorisation ------------------------------------------ */
 
     /*
@@ -755,6 +1125,65 @@ class WorkflowReference {
             archivedIssueCount: archivedIssueCount,
             reachState: reachState,
             reachPartitionState: reachPartitionState
+        ] as LinkedHashMap
+    }
+}
+
+/*
+ * One extension point an app contributes to a workflow: a post function, a
+ * condition, a validator or a pre function, pinned to the transition it sits in
+ * and to its index inside that chain.
+ *
+ * "Workflow X references app Y" was the old answer, and it cannot support a
+ * migration decision. This is the answer that can: which transition, what kind
+ * of extension point, which module of the app, and what runs behind it.
+ */
+class WorkflowExtension {
+
+    String workflowName
+    Boolean workflowActive
+
+    /* Transition, Global, Initial, Common, Step or Workflow */
+    String scope
+    Integer transitionId
+    String transitionName
+
+    String kind
+    String chain
+    int position
+    int chainLength
+
+    String type
+    String className
+    String fullModuleKey
+    String moduleKey
+    String ownerPluginKey
+    String attribution
+
+    /* entries behind this one in the same chain, and how many are foreign */
+    int followedBy
+    int followedByOther
+    boolean orderingRisk
+
+    Map<String, Object> asMap() {
+        return [
+            workflow: workflowName,
+            workflowActive: workflowActive,
+            scope: scope,
+            transitionId: transitionId,
+            transition: transitionName,
+            kind: kind,
+            chain: chain,
+            position: position,
+            chainLength: chainLength,
+            type: type,
+            className: className,
+            fullModuleKey: fullModuleKey,
+            moduleKey: moduleKey,
+            attribution: attribution,
+            followedBy: followedBy,
+            followedByOther: followedByOther,
+            orderingRisk: orderingRisk
         ] as LinkedHashMap
     }
 }
@@ -1019,6 +1448,7 @@ class AppFootprint {
     List<AppModuleInfo> modules = new ArrayList<AppModuleInfo>()
     List<CustomFieldFootprint> customFields = new ArrayList<CustomFieldFootprint>()
     List<WorkflowReference> workflowReferences = new ArrayList<WorkflowReference>()
+    List<WorkflowExtension> workflowExtensions = new ArrayList<WorkflowExtension>()
     List<String> diagnostics = new ArrayList<String>()
 
     /* aggregates, computed exactly once by finish() */
@@ -1038,6 +1468,17 @@ class AppFootprint {
     int archivedProjectWorkflowCount
     boolean workflowReachPartitionPartial
     int workflowReferenceCount
+
+    /* extension points this app contributes to workflows */
+    int extensionPointCount
+    int postFunctionCount
+    int conditionCount
+    int validatorCount
+    int preFunctionCount
+    int extensionWorkflowCount
+    int extensionTransitionCount
+    int orderingRiskCount
+
     int footprintSignals
     boolean detected
     int diagnosticCount
@@ -1172,7 +1613,47 @@ class AppFootprint {
             workflowReferenceCount += reference.references
         }
 
-        detected = !customFields.isEmpty() || !workflowReferences.isEmpty()
+        extensionPointCount = workflowExtensions.size()
+        postFunctionCount = 0
+        conditionCount = 0
+        validatorCount = 0
+        preFunctionCount = 0
+        orderingRiskCount = 0
+        Set<String> extensionWorkflows = new TreeSet<String>()
+        Set<String> extensionTransitions = new TreeSet<String>()
+        for (WorkflowExtension extension : workflowExtensions) {
+            if (Fp.KIND_POST_FUNCTION == extension.kind) {
+                postFunctionCount++
+            } else if (Fp.KIND_CONDITION == extension.kind) {
+                conditionCount++
+            } else if (Fp.KIND_VALIDATOR == extension.kind) {
+                validatorCount++
+            } else if (Fp.KIND_PRE_FUNCTION == extension.kind) {
+                preFunctionCount++
+            }
+            if (extension.orderingRisk) {
+                orderingRiskCount++
+            }
+            if (extension.workflowName != null) {
+                extensionWorkflows.add(extension.workflowName)
+                extensionTransitions.add(extension.workflowName + " " +
+                    extension.scope + " " + extension.transitionId)
+            }
+        }
+        extensionWorkflowCount = extensionWorkflows.size()
+        extensionTransitionCount = extensionTransitions.size()
+
+        /*
+         * An extension point counts as detection: the structural walk finds one
+         * even where asXML() failed and the token scan had nothing to read.
+         *
+         * footprintSignals deliberately stays as it was. Extension points and
+         * workflow references describe the same underlying facts from two
+         * angles, and adding them here would move every impact score without
+         * anything in the instance having changed.
+         */
+        detected = !customFields.isEmpty() || !workflowReferences.isEmpty() ||
+            !workflowExtensions.isEmpty()
         footprintSignals = customFields.size() + workflowReferences.size() + screenPlacements
 
         /*
@@ -1331,6 +1812,11 @@ class AppFootprint {
             workflowMaps.add(reference.asMap())
         }
 
+        List<Map<String, Object>> extensionMaps = new ArrayList<Map<String, Object>>()
+        for (WorkflowExtension extension : workflowExtensions) {
+            extensionMaps.add(extension.asMap())
+        }
+
         Map<String, Object> impactMap = assessment == null ?
             new LinkedHashMap<String, Object>() : assessment.asMap()
         impactMap.put("state", impactState)
@@ -1397,8 +1883,17 @@ class AppFootprint {
                 archivedProjectWorkflowCount: archivedProjectWorkflowCount,
                 workflowReachPartitionPartial: workflowReachPartitionPartial,
                 workflowReferences: workflowReferenceCount,
+                extensionPoints: extensionPointCount,
+                postFunctions: postFunctionCount,
+                conditions: conditionCount,
+                validators: validatorCount,
+                preFunctions: preFunctionCount,
+                extensionWorkflows: extensionWorkflowCount,
+                extensionTransitions: extensionTransitionCount,
+                orderingRisks: orderingRiskCount,
                 customFields: fieldMaps,
-                workflows: workflowMaps
+                workflows: workflowMaps,
+                workflowExtensions: extensionMaps
             ] as LinkedHashMap,
             diagnostics: diagnostics
         ] as LinkedHashMap
@@ -2680,6 +3175,8 @@ appFootprint(
     }
 
     List<WorkflowSnapshot> workflowSnapshots = new ArrayList<WorkflowSnapshot>()
+    List<WorkflowExtension> allWorkflowExtensions = new ArrayList<WorkflowExtension>()
+    boolean workflowExtensionWalkComplete = true
     long workflowXmlBytes = 0L
     long workflowDistinctTokens = 0L
 
@@ -2707,6 +3204,25 @@ appFootprint(
             snapshot.blob = Fp.blob(snapshot.tokens)
             workflowXmlBytes += snapshot.xml.length()
             workflowDistinctTokens += snapshot.tokens.size()
+        }
+
+        /*
+         * The structural walk runs for every workflow, gated by nothing. It
+         * reads the descriptor graph this snapshot already holds, so a failed
+         * asXML() above costs it nothing: a workflow the token scan cannot read
+         * still yields its extension points here.
+         */
+        try {
+            List<WorkflowExtension> walked = Fp.walkWorkflow(
+                workflow, workflow.getDescriptor(), snapshot.diagnostics)
+            for (WorkflowExtension extension : walked) {
+                extension.workflowName = snapshot.name
+                extension.workflowActive = snapshot.active
+            }
+            allWorkflowExtensions.addAll(walked)
+        } catch (Exception error) {
+            workflowExtensionWalkComplete = false
+            Fp.note(snapshot.diagnostics, "extension point walk", error)
         }
         if (!snapshot.diagnostics.isEmpty()) {
             for (String entry : snapshot.diagnostics) {
@@ -3010,6 +3526,7 @@ appFootprint(
     }
 
     List<AppFootprint> apps = new ArrayList<AppFootprint>()
+    Map<String, String> moduleClassOwners = new HashMap<String, String>()
     Map<CustomFieldFootprint, CustomField> appCustomFieldSources =
         new LinkedHashMap<CustomFieldFootprint, CustomField>()
     int issueCountsSkippedByBudget = 0
@@ -3093,6 +3610,7 @@ appFootprint(
                     module.moduleClass = moduleClazz.getName()
                     if (!module.moduleClass.startsWith("java.") && !module.moduleClass.startsWith("groovy.")) {
                         moduleClasses.add(module.moduleClass)
+                        moduleClassOwners.putIfAbsent(module.moduleClass, app.pluginKey)
                     }
                 }
             } catch (Throwable ignored) {
@@ -3475,6 +3993,74 @@ appFootprint(
         field.issueSplitState = Fp.MEASURED
     }
 
+    /* ---- Workflow extension points: ownership and ordering ----------------- */
+
+    /*
+     * The plugin key universe deliberately comes from every installed plugin,
+     * not from the filtered candidate list. A plugin excluded by includeSystem
+     * or includeDisabled still owns its modules, and leaving its key out would
+     * let a shorter key that happens to prefix it claim them.
+     */
+    Set<String> attributionPluginKeys = new LinkedHashSet<String>()
+    try {
+        for (Plugin plugin : pluginAccessor.getPlugins()) {
+            String key = plugin.getKey()
+            if (key != null && !key.isEmpty()) {
+                attributionPluginKeys.add(key)
+            }
+        }
+    } catch (Exception error) {
+        workflowExtensionWalkComplete = false
+        Fp.note(globalDiagnostics, "plugin keys for workflow attribution", error)
+        for (AppFootprint app : apps) {
+            attributionPluginKeys.add(app.pluginKey)
+        }
+    }
+
+    for (WorkflowExtension extension : allWorkflowExtensions) {
+        String owner = Fp.fullModuleOwner(extension.fullModuleKey, attributionPluginKeys)
+        if (owner != null) {
+            extension.ownerPluginKey = owner
+            extension.moduleKey = Fp.moduleKeyOf(extension.fullModuleKey, owner)
+            extension.attribution = Fp.BY_MODULE_KEY
+            continue
+        }
+        /*
+         * No full.module.key on this entry. Jira writes that arg whenever a
+         * plugin module is added through the admin UI, so what lands here is
+         * either a native function or one written straight into the descriptor
+         * by an import. The implementation class is the only handle left.
+         */
+        String byClass = extension.className == null ?
+            null : moduleClassOwners.get(extension.className)
+        if (byClass != null) {
+            extension.ownerPluginKey = byClass
+            extension.attribution = Fp.BY_MODULE_CLASS
+        }
+    }
+
+    Fp.markOrdering(allWorkflowExtensions)
+
+    Map<String, List<WorkflowExtension>> extensionsByApp =
+        new HashMap<String, List<WorkflowExtension>>()
+    for (WorkflowExtension extension : allWorkflowExtensions) {
+        if (extension.ownerPluginKey == null) {
+            continue
+        }
+        List<WorkflowExtension> bucket = extensionsByApp.get(extension.ownerPluginKey)
+        if (bucket == null) {
+            bucket = new ArrayList<WorkflowExtension>()
+            extensionsByApp.put(extension.ownerPluginKey, bucket)
+        }
+        bucket.add(extension)
+    }
+    for (AppFootprint app : apps) {
+        List<WorkflowExtension> owned = extensionsByApp.get(app.pluginKey)
+        if (owned != null) {
+            app.workflowExtensions.addAll(owned)
+        }
+    }
+
     for (AppFootprint app : apps) {
         app.finish(issueCounts ? activeIssuesByProject : null,
             issueCounts && includeArchived ? archivedIssuesByProject : null)
@@ -3576,6 +4162,9 @@ appFootprint(
     boolean issueSplitTotalsPartial = false
     int totalScreenPlacements = 0
     int totalWorkflowReferences = 0
+    int totalExtensionPoints = 0
+    int totalPostFunctions = 0
+    int totalOrderingRisks = 0
     int totalDiagnostics = globalDiagnostics.size()
     int totalObservations = globalObservations.size()
     Set<String> allImpactedProjects = new TreeSet<String>()
@@ -3623,6 +4212,9 @@ appFootprint(
         }
         totalScreenPlacements += app.screenPlacements
         totalWorkflowReferences += app.workflowReferenceCount
+        totalExtensionPoints += app.extensionPointCount
+        totalPostFunctions += app.postFunctionCount
+        totalOrderingRisks += app.orderingRiskCount
         totalDiagnostics += app.diagnosticCount
     }
 
@@ -3771,6 +4363,10 @@ appFootprint(
                 issueCountsSkippedByBudget: issueCountsSkippedByBudget,
                 screenPlacements: totalScreenPlacements,
                 workflowReferences: totalWorkflowReferences,
+                extensionPoints: totalExtensionPoints,
+                postFunctions: totalPostFunctions,
+                orderingRisks: totalOrderingRisks,
+                extensionWalkComplete: workflowExtensionWalkComplete,
                 reachState: reachSummaryState,
                 impactedProjects: Fp.measuredValue(
                     reachSummaryState, Integer.valueOf(allImpactedProjects.size())),
@@ -3834,6 +4430,8 @@ appFootprint(
         csv.append("impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions,")
         csv.append("modules,enabledModules,customFields,issueFieldAssociations,activeIssueFieldAssociations,archivedIssueFieldAssociations,associationState,issueSplitState,issueCountsComplete,issueSplitComplete,")
         csv.append("screenPlacements,uniqueScreens,workflows,activeWorkflows,workflowReferences,")
+        csv.append("extensionPoints,postFunctions,conditions,validators,preFunctions,")
+        csv.append("extensionWorkflows,extensionTransitions,orderingRisks,")
         csv.append("impactedProjects,impactedIssues,activeImpactedProjects,archivedImpactedProjects,unknownImpactedProjects,activeImpactedIssues,archivedImpactedIssues,reachState,activeReachState,archivedReachState,impactComplete,restModules,servletModules,")
         csv.append("detectedFootprint,diagnostics\n")
 
@@ -3879,6 +4477,14 @@ appFootprint(
             csv.append(app.workflowCount).append(",")
             csv.append(app.activeWorkflowCount).append(",")
             csv.append(app.workflowReferenceCount).append(",")
+            csv.append(app.extensionPointCount).append(",")
+            csv.append(app.postFunctionCount).append(",")
+            csv.append(app.conditionCount).append(",")
+            csv.append(app.validatorCount).append(",")
+            csv.append(app.preFunctionCount).append(",")
+            csv.append(app.extensionWorkflowCount).append(",")
+            csv.append(app.extensionTransitionCount).append(",")
+            csv.append(app.orderingRiskCount).append(",")
             csv.append(Fp.csvMeasurement(
                 reachState, Integer.valueOf(app.impactedProjectKeys.size()))).append(",")
             csv.append(Fp.csvMeasurement(reachState, app.impactedIssues)).append(",")
@@ -4003,6 +4609,11 @@ appFootprint(
         row.put("workflows", Integer.valueOf(app.workflowCount))
         row.put("activeWorkflows", Integer.valueOf(app.activeWorkflowCount))
         row.put("workflowReferences", Integer.valueOf(app.workflowReferenceCount))
+        row.put("extensionPoints", Integer.valueOf(app.extensionPointCount))
+        row.put("postFunctions", Integer.valueOf(app.postFunctionCount))
+        row.put("conditions", Integer.valueOf(app.conditionCount))
+        row.put("validators", Integer.valueOf(app.validatorCount))
+        row.put("orderingRisks", Integer.valueOf(app.orderingRiskCount))
         row.put("reachState", PageExport.reachState(app, includeReach))
         row.put("impactedProjects", Integer.valueOf(app.impactedProjectKeys.size()))
         row.put("impactedIssues", app.impactedIssues)
@@ -4042,6 +4653,9 @@ appFootprint(
     exportSummary.put("archivedAssociationState", associationSplitSummaryState)
     exportSummary.put("screenPlacements", Integer.valueOf(totalScreenPlacements))
     exportSummary.put("workflowReferences", Integer.valueOf(totalWorkflowReferences))
+    exportSummary.put("extensionPoints", Integer.valueOf(totalExtensionPoints))
+    exportSummary.put("postFunctions", Integer.valueOf(totalPostFunctions))
+    exportSummary.put("orderingRisks", Integer.valueOf(totalOrderingRisks))
     exportSummary.put("workflowsScanned", Integer.valueOf(scannableWorkflows.size()))
     exportSummary.put("workflowsTotal", Integer.valueOf(workflowSnapshots.size()))
     exportSummary.put("reachState", reachSummaryState)
@@ -4347,6 +4961,14 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="summary-label">Workflow References</div>
     </div>
     <div class="summary-card">
+        <div class="summary-value">${num(totalExtensionPoints)}${workflowExtensionWalkComplete ? "" : '<span class="warn" title="At least one workflow could not be walked, this is a lower bound">&#42;</span>'}</div>
+        <div class="summary-label">App Extension Points</div>
+    </div>
+    <div class="summary-card">
+        <div class="summary-value">${totalOrderingRisks > 0 ? '<span class="warn">' + num(totalOrderingRisks) + '</span>' : num(totalOrderingRisks)}</div>
+        <div class="summary-label">Ordering Dependencies</div>
+    </div>
+    <div class="summary-card">
         <div class="summary-value">${includeReach ? num(allActiveImpactedSpaces.size()) : '<span class="muted">off</span>'}</div>
         <div class="summary-label">Projects Touched · Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete) ? '<span class="warn" title="Active Project reach is incomplete">&#42;</span>' : ""}</div>
     </div>
@@ -4641,6 +5263,14 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="metric-value">${num(app.workflowReferenceCount)}</div>
         <div class="metric-label">Workflow References</div>
     </div>
+    <div class="metric">
+        <div class="metric-value">${num(app.extensionPointCount)}</div>
+        <div class="metric-label">Extension Points${app.extensionPointCount > 0 ? " &middot; " + num(app.postFunctionCount) + " Post Fn" : ""}</div>
+    </div>
+    <div class="metric">
+        <div class="metric-value">${app.orderingRiskCount > 0 ? '<span class="warn">' + num(app.orderingRiskCount) + '</span>' : num(app.orderingRiskCount)}</div>
+        <div class="metric-label">Ordering Dependencies</div>
+    </div>
     <div class="metric impact">
         <div class="metric-value">${includeReach ? num(app.activeImpactedProjectKeys.size()) + ((app.activeImpactPartial || activeReachInventoryIncomplete) ? '<span class="warn" title="Incomplete, lower bound">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
         <div class="metric-label">Projects Touched &middot; Active${issueCounts && app.activeImpactedIssues != null ? " &middot; " + num(app.activeImpactedIssues) + " Issues" : ""}</div>
@@ -4875,6 +5505,97 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
     </table>
     </div>
 """)
+        }
+
+        html.append("""</div>
+
+<div class="section">
+    <div class="section-title">Workflow Extension Points</div>
+""")
+
+        if (app.workflowExtensions.isEmpty()) {
+            html.append("""    <div class="empty">This app contributes no post function, condition, validator or pre function to any workflow descriptor.</div>\n""")
+        } else {
+            List<WorkflowExtension> ordered = new ArrayList<WorkflowExtension>(app.workflowExtensions)
+            ordered.sort { WorkflowExtension a, WorkflowExtension b ->
+                int byWorkflow = Fp.nullSafe(a.workflowName) <=> Fp.nullSafe(b.workflowName)
+                if (byWorkflow != 0) {
+                    return byWorkflow
+                }
+                int byTransition = Fp.nullSafe(a.transitionName) <=> Fp.nullSafe(b.transitionName)
+                if (byTransition != 0) {
+                    return byTransition
+                }
+                int byChain = Fp.nullSafe(a.chain) <=> Fp.nullSafe(b.chain)
+                return byChain != 0 ? byChain : Integer.compare(a.position, b.position)
+            }
+
+            html.append("""    <div class="metrics">
+        <div><span class="muted">Post functions</span> <strong>${num(app.postFunctionCount)}</strong></div>
+        <div><span class="muted">Conditions</span> <strong>${num(app.conditionCount)}</strong></div>
+        <div><span class="muted">Validators</span> <strong>${num(app.validatorCount)}</strong></div>
+        <div><span class="muted">Pre functions</span> <strong>${num(app.preFunctionCount)}</strong></div>
+        <div><span class="muted">Workflows</span> <strong>${num(app.extensionWorkflowCount)}</strong></div>
+        <div><span class="muted">Transitions</span> <strong>${num(app.extensionTransitionCount)}</strong></div>
+        <div><span class="muted">Ordering dependencies</span> <strong class="${app.orderingRiskCount > 0 ? 'warn' : ''}">${num(app.orderingRiskCount)}</strong></div>
+    </div>
+    <div class="table-wrap">
+    <table class="footprint-table">
+        <thead>
+            <tr>
+                <th>Workflow</th>
+                <th>Scope</th>
+                <th>Transition</th>
+                <th>Kind</th>
+                <th>Chain</th>
+                <th class="num">Position</th>
+                <th class="num">Behind it</th>
+                <th>Module</th>
+                <th>Attribution</th>
+            </tr>
+        </thead>
+        <tbody>
+""")
+
+            for (WorkflowExtension extension : ordered) {
+                String workflowCell = esc(extension.workflowName) +
+                    (extension.workflowActive == Boolean.TRUE ? "" :
+                        " <span class=\"muted\">(inactive / draft)</span>")
+                String transitionCell = extension.transitionName == null ?
+                    "<span class=\"muted\">n/a</span>" :
+                    esc(extension.transitionName) +
+                        (extension.transitionId == null ? "" :
+                            " <span class=\"muted\">#" + esc(extension.transitionId) + "</span>")
+                String moduleLabel = extension.moduleKey != null ? extension.moduleKey : extension.className
+                String moduleCell = moduleLabel == null ?
+                    "<span class=\"muted\">unknown</span>" :
+                    "<span class=\"mono\">" + esc(moduleLabel) + "</span>"
+                String behindCell = extension.orderingRisk ?
+                    "<span class=\"warn\" title=\"Another provider runs after this post function in the same chain\">" +
+                        num(extension.followedByOther) + " of " + num(extension.followedBy) + "</span>" :
+                    num(extension.followedBy)
+
+                html.append("""            <tr>
+                <td>${workflowCell}</td>
+                <td>${esc(extension.scope)}</td>
+                <td>${transitionCell}</td>
+                <td>${esc(extension.kind)}</td>
+                <td class="muted">${esc(extension.chain)}</td>
+                <td class="num">${num(extension.position)} / ${num(extension.chainLength)}</td>
+                <td class="num">${behindCell}</td>
+                <td>${moduleCell}</td>
+                <td>${esc(extension.attribution)}</td>
+            </tr>
+""")
+            }
+
+            html.append("""        </tbody>
+    </table>
+    </div>
+""")
+            if (app.orderingRiskCount > 0) {
+                html.append("""    <div class="empty">Ordering dependency: ${num(app.orderingRiskCount)} post function(s) of this app have at least one post function from another provider running after them in the same chain. On Data Center those run in this order, synchronously, as part of the transition.</div>\n""")
+            }
         }
 
         html.append("""</div>

@@ -13,6 +13,25 @@ published in this repository.
 
 ### Added
 
+- **Jira: workflow extension points, per transition and per position** (`3.4`). The report
+  now names every post function, condition, validator and pre function an app contributes
+  to a workflow, together with the transition it sits in and its index inside that chain.
+  Previously the workflow view could only say that a workflow referenced an app somewhere,
+  which is not enough to plan a migration around.
+- **Jira: ordering dependencies.** A post function of an app is flagged when a post function
+  from another provider runs after it in the same chain. Conditional branches are kept
+  apart, so entries that can never run in sequence are never compared. Reported per app, per
+  transition, and as an instance total.
+- Jira attributes an extension point through the `full.module.key` argument. That value is
+  the plugin key and the module key concatenated **without a separator**, so it is resolved
+  by longest matching plugin key rather than split. The key universe deliberately covers
+  every installed plugin, including those the current filters exclude, so a shorter key
+  cannot claim the modules of a longer one it happens to prefix. Where the argument is
+  absent the implementation class is used, and the report says which of the two applied.
+- Jira walks every workflow structurally, gated by nothing. It reads the descriptor graph
+  the script already holds, so a workflow whose XML serialisation failed still yields its
+  extension points, and the walk performs no additional retrieval.
+
 - **Confluence page export, in both endpoints.** The report writes its executive summary
   into a Confluence page. An administrator opens the export, picks a target, searches for a
   space, optionally names a parent page, and gives the page a title. A repeat run updates
