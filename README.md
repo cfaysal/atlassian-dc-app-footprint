@@ -10,7 +10,7 @@ These scripts measure that difference.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.5 |
+| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.7 |
 | [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.7 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
@@ -233,8 +233,29 @@ The second is the implementation class, and it is not a fallback for rare cases.
 carrying `class.name` and nothing else. Every app condition and every app validator is found
 through the class path or not at all. The class index is built from
 `AbstractWorkflowModuleDescriptor.getImplementationClass()`, which is exactly the string Jira
-writes into `class.name`. Since one class often serves many modules, those rows name the class
-rather than a module key.
+writes into `class.name`.
+
+That answers which app, not which module: one implementation class routinely serves many
+modules. Measured on one instance, 34 app-and-class pairs covered 72 modules, and ScriptRunner's
+`GroovyCondition` alone stands behind every one of its canned conditions. So the module is named
+from a second signal, under rules deliberately kept narrow, because a wrong module name in a
+migration audit is worse than an empty cell:
+
+- Only the app's **workflow** modules are candidates. Its web resources, servlets and REST
+  modules cannot produce a workflow entry.
+- Only **namespaced** argument values of real length are considered. A system field id, a group
+  name or a role name identifies nothing, and apps name their modules from those same words:
+  matching on `assignee` would mislabel a validator as whatever module happened to be named
+  after that field.
+- The value must sit at the **end** of the module key, which is the shape a prefixed module key
+  actually has.
+- A module is reported **only when exactly one candidate matches**. Two mean the descriptor
+  cannot tell them apart, and the cell stays empty.
+
+Every row records whether its module was read from the descriptor or derived this way. What
+none of it defends against is a descriptor that misstates itself: a workflow imported from XML
+carries whatever its author wrote. The owning app is still measured from `class.name`, so such
+an error is bounded to naming the wrong module of the right app.
 
 From that, the report derives one number worth acting on: an **ordering dependency**. A post
 function of the app is flagged when at least one post function from another provider runs
@@ -246,9 +267,14 @@ another platform.
 The walk runs for every workflow, independent of the text scan, and it costs no extra
 retrieval: it reads the descriptor graph the script already holds in memory.
 
-One thing it deliberately does not do is invent a module name. A condition contributed through
-a shared implementation class is reported with that class, marked as a class match, and left
-without a module key, because the descriptor does not carry one.
+One thing it deliberately does not do is invent a module name. Where the arguments cannot single
+out one module, the row shows the implementation class and no module key.
+
+The extension point inventory and the workflow reference count answer different questions and
+will not agree. A reference counts how often the app appears as text anywhere in a descriptor;
+an extension point is one configured post function, condition or validator. One post function
+carrying `full.module.key` produces a single reference, while the same transition may hold three
+extension points.
 
 ## Instance-relative impact
 

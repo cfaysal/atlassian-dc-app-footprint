@@ -1870,6 +1870,164 @@ Fp.resolveOwner(blank, installedKeys, implOwners, factoryOwners)
 ok("an entry with no class and no module key is not attributed",
     blank.ownerPluginKey == null && blank.attribution == null)
 
+/* ---- naming the module behind an entry ----------------------------------- */
+
+/*
+ * Measured on the live instance: an implementation class does NOT identify a
+ * module. 72 modules carry one, across 34 app+class pairs, and 4 of those pairs
+ * cover several modules. ScriptRunner's GroovyCondition alone covers
+ * script-condition plus every canned condition module. So the class cannot name
+ * the module, and the entry's own arguments are the only remaining handle.
+ */
+List<String> scriptRunnerModules = [
+    "script-condition",
+    "script-validator",
+    "rungroovy-function",
+    "scriptrunner-workflow-function-com.onresolve.scriptrunner.canned.jira.workflow.conditions.AllSubtasksResolvedCondition",
+    "scriptrunner-workflow-function-com.onresolve.scriptrunner.canned.jira.workflow.validators.CommentRequiredValidator",
+    "scriptrunner-workflow-function-com.onresolve.scriptrunner.canned.jira.workflow.postfunctions.AddWatcher",
+]
+
+class FakeArgs {
+    Map args = [:]
+    Map getArgs() { return args }
+}
+
+/* the canned-script argument is verbatim from the jira-test descriptor */
+WorkflowExtension canned = new WorkflowExtension(kind: Fp.KIND_CONDITION,
+    className: "com.onresolve.jira.groovy.GroovyCondition")
+canned.identity.addAll(Fp.identityArgs(new FakeArgs(args: [
+    "class.name": "com.onresolve.jira.groovy.GroovyCondition",
+    "canned-script": "com.onresolve.scriptrunner.canned.jira.workflow.conditions.AllSubtasksResolvedCondition",
+    "FIELD_FUNCTION_ID": "52102ccb-3d58-4b9f-add0-ae54c1eece56",
+    "RESOLUTION_FIELD_NAME": "",
+])))
+Fp.identifyModule(canned, scriptRunnerModules)
+check("the canned condition module is named from the descriptor argument",
+    canned.moduleKey,
+    "scriptrunner-workflow-function-com.onresolve.scriptrunner.canned.jira.workflow.conditions.AllSubtasksResolvedCondition")
+check("and the report says where that name came from",
+    canned.moduleKeySource, Fp.BY_DESCRIPTOR_ARGUMENT)
+
+check("class.name and full.module.key are never identity material",
+    Fp.identityArgs(new FakeArgs(args: [
+        "class.name": "com.onresolve.jira.groovy.GroovyCondition",
+        "full.module.key": "com.acme.appthing"])),
+    [])
+check("a flat token identifies nothing and is dropped, whatever its length",
+    Fp.identityArgs(new FakeArgs(args: ["a": "short", "b": "TESTPROJ", "c": "",
+                                        "d": "jira-administrators"])),
+    [])
+
+/* ambiguity must produce silence, not a guess */
+WorkflowExtension ambiguous = new WorkflowExtension(kind: Fp.KIND_CONDITION)
+ambiguous.identity.addAll(["com.onresolve.scriptrunner.canned.jira.workflow"])
+Fp.identifyModule(ambiguous, scriptRunnerModules)
+ok("an argument matching several modules names none of them",
+    ambiguous.moduleKey == null && ambiguous.moduleKeySource == null)
+
+/* an entry that already knows its module is never second-guessed */
+WorkflowExtension alreadyNamed = new WorkflowExtension(kind: Fp.KIND_POST_FUNCTION,
+    moduleKey: "rungroovy-function", moduleKeySource: Fp.BY_MODULE_KEY_ARG)
+alreadyNamed.identity.addAll(["com.onresolve.scriptrunner.canned.jira.workflow.postfunctions.AddWatcher"])
+Fp.identifyModule(alreadyNamed, scriptRunnerModules)
+check("a module named by full.module.key is left alone",
+    alreadyNamed.moduleKey, "rungroovy-function")
+check("and keeps its provenance", alreadyNamed.moduleKeySource, Fp.BY_MODULE_KEY_ARG)
+
+/* nothing to go on stays nothing */
+WorkflowExtension bare = new WorkflowExtension(kind: Fp.KIND_VALIDATOR)
+Fp.identifyModule(bare, scriptRunnerModules)
+ok("an entry without arguments names no module", bare.moduleKey == null)
+WorkflowExtension noModules = new WorkflowExtension(kind: Fp.KIND_VALIDATOR)
+noModules.identity.addAll(["com.onresolve.scriptrunner.canned.jira.workflow.validators.CommentRequiredValidator"])
+Fp.identifyModule(noModules, null)
+ok("an app with no known modules names no module", noModules.moduleKey == null)
+WorkflowExtension noMatch = new WorkflowExtension(kind: Fp.KIND_VALIDATOR)
+noMatch.identity.addAll(["com.example.something.Entirely.Different"])
+Fp.identifyModule(noMatch, scriptRunnerModules)
+ok("an argument matching nothing names nothing", noMatch.moduleKey == null)
+
+/*
+ * red before green: naming the module from the implementation class instead of
+ * the argument would have to pick one of six, and on this instance the class
+ * genuinely covers three of them.
+ */
+int coveredByTheClass = scriptRunnerModules.count { String key ->
+    key == "script-condition" || key.contains("conditions.") || key.contains("validators.")
+}
+ok("the implementation class alone cannot single out a module", coveredByTheClass > 1)
+
+/* ---- naming a module: the ways it can name the wrong one ----------------- */
+
+/*
+ * Adversarial review, 2026-08-27. The first version of this rule matched an
+ * argument value ANYWHERE in a module key, with a floor of eight characters,
+ * against the app's ENTIRE module list. Each of those three choices is a way to
+ * be confidently wrong, and the case below is the one that would actually occur:
+ * a validator configured on a system field, in an app that happens to own one
+ * module named after the same word.
+ *
+ * The true module never competes, so "exactly one match" is satisfied and the
+ * answer is still wrong. That is the failure this guards against.
+ */
+List<String> acmeWorkflowModules = ["assignee-sync-function", "field-required-validator"]
+
+WorkflowExtension fieldValidator = new WorkflowExtension(kind: Fp.KIND_VALIDATOR,
+    className: "com.acme.toolkit.FieldRequiredValidator")
+fieldValidator.identity.addAll(Fp.identityArgs(new FakeArgs(args: [
+    "class.name": "com.acme.toolkit.FieldRequiredValidator",
+    "fieldsList": "assignee",
+])))
+Fp.identifyModule(fieldValidator, acmeWorkflowModules)
+ok("a system field id never names a module",
+    fieldValidator.moduleKey == null && fieldValidator.moduleKeySource == null)
+
+/* the control: the rule as first written would have named the wrong module */
+def matchAnywhereWithFloorOfEight = { String value, List<String> keys ->
+    if (value == null || value.length() < 8) {
+        return null
+    }
+    List<String> hits = keys.findAll { String k -> k.contains(value) }
+    return hits.size() == 1 ? hits[0] : null
+}
+check("the control names a post function module for a validator",
+    matchAnywhereWithFloorOfEight("assignee", acmeWorkflowModules), "assignee-sync-function")
+ok("the shipped rule names nothing there",
+    fieldValidator.moduleKey == null)
+
+/* group and role names are the same vocabulary trap */
+WorkflowExtension groupCondition = new WorkflowExtension(kind: Fp.KIND_CONDITION,
+    className: "com.acme.toolkit.GroupCondition")
+groupCondition.identity.addAll(Fp.identityArgs(new FakeArgs(args: [
+    "groupName": "jira-administrators"])))
+Fp.identifyModule(groupCondition, ["jira-administrators-gate-condition", "group-condition"])
+ok("a group name never names a module", groupCondition.moduleKey == null)
+
+/* anchoring: a value sitting at the front of an unrelated key is not a match */
+WorkflowExtension frontMatch = new WorkflowExtension(kind: Fp.KIND_CONDITION)
+frontMatch.identity.addAll(["com.acme.toolkit.Marker"])
+Fp.identifyModule(frontMatch, ["com.acme.toolkit.Marker-and-more"])
+ok("a namespaced value at the front of a key does not name it",
+    frontMatch.moduleKey == null)
+WorkflowExtension tailMatch = new WorkflowExtension(kind: Fp.KIND_CONDITION)
+tailMatch.identity.addAll(["com.acme.toolkit.Marker"])
+Fp.identifyModule(tailMatch, ["prefix-com.acme.toolkit.Marker"])
+check("the same value at the end does", tailMatch.moduleKey, "prefix-com.acme.toolkit.Marker")
+
+/* a whole inline script is neither identity material nor a performance problem */
+String inlineScript = "issue.summary != null && issue.priority?.name == 'Blocker' " * 40
+check("an inline script is not kept as identity material",
+    Fp.identityArgs(new FakeArgs(args: ["condition": inlineScript])), [])
+
+/* the length and namespace guards, stated directly */
+ok("a namespaced identifier of real length qualifies",
+    Fp.couldNameAModule("com.onresolve.scriptrunner.canned.jira.workflow.conditions.AllSubtasksResolvedCondition"))
+ok("a flat word does not, however long", !Fp.couldNameAModule("supercalifragilistic"))
+ok("a short namespaced value does not", !Fp.couldNameAModule("a.b.c"))
+ok("a value starting with a dot does not", !Fp.couldNameAModule(".hidden.but.long.enough.value"))
+ok("nothing does not", !Fp.couldNameAModule(null))
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed

@@ -13,6 +13,28 @@ published in this repository.
 
 ### Added
 
+- **Jira: the module behind a condition or validator is named where the descriptor allows it**
+  (`3.6`). The implementation class identifies the app but not the module: measured on one
+  instance, 34 app-and-class pairs covered 72 modules. The entry's own descriptor arguments are
+  now matched against the module keys of the owning app, and a module is reported only when
+  exactly one matches. A ScriptRunner condition that read `GroovyCondition` now reads
+  `scriptrunner-workflow-function-…AllSubtasksResolvedCondition`. Ambiguous cases stay empty
+  rather than carrying a guess, and every row records how its module was named.
+- The naming rule is narrow on purpose, after an adversarial review found the first version
+  could be confidently wrong. Candidates are the app's workflow modules only; argument values
+  must be namespaced identifiers of real length, so that a system field id or group name cannot
+  name a module; the value must sit at the end of the key; and exactly one candidate must match.
+  Measured on a live instance after the narrowing: the four ScriptRunner extension points still
+  name their exact canned module, and exactly three entries instance-wide carry a derived name.
+- **Jira: an app whose only workflow footprint is a condition or validator is no longer missed
+  by the text scan.** Implementation classes joined the scan's needles. The scan reaches for
+  class needles only when the plugin key produced no hit at all, so no existing count can grow
+  because of this; what changes is the case that previously produced nothing. Measured against a
+  live instance with a workflow carrying a single ScriptRunner condition and no post function:
+  the plugin key appears nowhere in that descriptor, `getModuleClass()` reports a Jira factory
+  that appears nowhere either, and the workflow went entirely unlisted. It is now listed, with
+  the detection path named.
+
 - **Jira: app conditions and validators are attributed through the implementation class**
   (`3.5`). Jira writes the `full.module.key` argument for post functions only, verified in the
   bytecode of `AddWorkflowTransitionConditionParams` and `AddWorkflowTransitionValidatorParams`

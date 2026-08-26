@@ -134,7 +134,7 @@ class Fp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "3.5"
+    static final String VERSION = "3.7"
 
     /* A needle can only occur inside a single token, so shorter tokens are
      * dropped. Needles below this length fall back to a raw scan. */
@@ -538,6 +538,11 @@ class Fp {
     static final String BY_MODULE_KEY = "Module key"
     static final String BY_MODULE_CLASS = "Module class"
 
+    /* how the module behind an entry was named, which is not the same question
+     * as which app owns it */
+    static final String BY_MODULE_KEY_ARG = "full.module.key"
+    static final String BY_DESCRIPTOR_ARGUMENT = "Descriptor argument"
+
     static Object safeCall(Object owner, String getter) {
         if (owner == null) {
             return null
@@ -570,6 +575,116 @@ class Fp {
         }
         Object value = ((Map) args).get(name)
         return value == null ? null : value.toString()
+    }
+
+    /*
+     * Argument values that could name a module, and only those.
+     *
+     * The measured shape this exists for is a namespaced identifier: ScriptRunner
+     * registers one module per canned script, and the module key is a fixed
+     * prefix followed by the canned class, which the entry repeats in an
+     * argument. Three filters keep the material to that shape.
+     *
+     * A length floor of 8 was the first attempt and it was wrong. The risk is
+     * not length, it is VOCABULARY: a condition or validator is configured with
+     * system field ids and group names, and apps name their modules from the
+     * same words. "assignee" is eight characters, and an app owning a module
+     * called assignee-sync-function would have that validator confidently
+     * mislabelled. So a value must also be namespaced - carry a dot - which no
+     * field id, group name, role name or status name does, and which every
+     * identifier that genuinely names a module does.
+     *
+     * The upper bound keeps whole inline scripts out of memory. They could never
+     * match anything anyway, being longer than any module key.
+     */
+    static final int MIN_IDENTITY_LENGTH = 20
+    static final int MAX_IDENTITY_LENGTH = 300
+
+    static boolean couldNameAModule(String value) {
+        return value != null &&
+            value.length() >= MIN_IDENTITY_LENGTH &&
+            value.length() <= MAX_IDENTITY_LENGTH &&
+            value.indexOf((int) ('.' as char)) > 0
+    }
+
+    static List<String> identityArgs(Object descriptor) {
+        List<String> values = new ArrayList<String>()
+        Object args = safeCall(descriptor, "getArgs")
+        if (!(args instanceof Map)) {
+            return values
+        }
+        for (Object entry : ((Map) args).entrySet()) {
+            Map.Entry pair = (Map.Entry) entry
+            String name = pair.getKey() == null ? "" : pair.getKey().toString()
+            if (ARG_CLASS_NAME == name || ARG_FULL_MODULE_KEY == name) {
+                continue
+            }
+            Object raw = pair.getValue()
+            String value = raw == null ? null : raw.toString().trim()
+            if (couldNameAModule(value) && !values.contains(value)) {
+                values.add(value)
+            }
+        }
+        Collections.sort(values)
+        return values
+    }
+
+    /*
+     * Which module of the owning app produced this entry, where the descriptor
+     * did not say outright.
+     *
+     * Three narrowings, each answering a way this can go wrong.
+     *
+     * The candidate keys are WORKFLOW modules only. An app's full module list
+     * holds web resources, servlets and REST modules, none of which can produce
+     * a workflow entry, and every one of them is another chance to match the
+     * wrong thing.
+     *
+     * The match is anchored at the end. The measured shape is a module key made
+     * of a fixed prefix plus the identifier, so the identifier is a suffix.
+     * Matching anywhere in the key buys no measured recall and admits a value
+     * that happens to appear at the front of an unrelated key.
+     *
+     * And a module is reported ONLY when exactly one candidate matches. Two
+     * candidates mean the descriptor cannot tell them apart, and a guess would
+     * read like a measurement. It stays null then.
+     *
+     * What none of this defends against: a descriptor that misstates itself. A
+     * workflow imported from XML carries whatever arguments its author wrote,
+     * and an argument crafted to end a module key of the owning app will name
+     * that module. The owner is still measured from class.name, so the error is
+     * bounded to naming the wrong module of the right app, and the report says
+     * the name was derived rather than read.
+     */
+    static void identifyModule(WorkflowExtension extension, Collection<String> ownerModuleKeys) {
+        if (extension == null || extension.moduleKey != null ||
+            ownerModuleKeys == null || extension.identity.isEmpty()) {
+            return
+        }
+        String found = null
+        for (String moduleKey : ownerModuleKeys) {
+            if (moduleKey == null) {
+                continue
+            }
+            boolean hit = false
+            for (String value : extension.identity) {
+                if (moduleKey.endsWith(value)) {
+                    hit = true
+                    break
+                }
+            }
+            if (!hit) {
+                continue
+            }
+            if (found != null) {
+                return
+            }
+            found = moduleKey
+        }
+        if (found != null) {
+            extension.moduleKey = found
+            extension.moduleKeySource = BY_DESCRIPTOR_ARGUMENT
+        }
     }
 
     /*
@@ -639,6 +754,9 @@ class Fp {
             extension.ownerPluginKey = owner
             extension.moduleKey = moduleKeyOf(extension.fullModuleKey, owner)
             extension.attribution = BY_MODULE_KEY
+            if (extension.moduleKey != null) {
+                extension.moduleKeySource = BY_MODULE_KEY_ARG
+            }
             return
         }
         if (extension.className == null) {
@@ -683,6 +801,7 @@ class Fp {
             extension.type = (String) safeCall(entry, "getType")
             extension.className = argOf(entry, ARG_CLASS_NAME)
             extension.fullModuleKey = argOf(entry, ARG_FULL_MODULE_KEY)
+            extension.identity.addAll(identityArgs(entry))
             sink.add(extension)
         }
     }
@@ -1200,8 +1319,12 @@ class WorkflowExtension {
     String className
     String fullModuleKey
     String moduleKey
+    String moduleKeySource
     String ownerPluginKey
     String attribution
+
+    /* argument values other than class.name and full.module.key */
+    List<String> identity = new ArrayList<String>()
 
     /* entries behind this one in the same chain, and how many are foreign */
     int followedBy
@@ -1223,6 +1346,7 @@ class WorkflowExtension {
             className: className,
             fullModuleKey: fullModuleKey,
             moduleKey: moduleKey,
+            moduleKeySource: moduleKeySource,
             attribution: attribution,
             followedBy: followedBy,
             followedByOther: followedByOther,
@@ -3586,6 +3710,7 @@ appFootprint(
      */
     Map<String, String> implementationClassOwners = new HashMap<String, String>()
     Map<String, String> moduleClassOwners = new HashMap<String, String>()
+    Map<String, Set<String>> moduleKeysByPlugin = new HashMap<String, Set<String>>()
     Map<CustomFieldFootprint, CustomField> appCustomFieldSources =
         new LinkedHashMap<CustomFieldFootprint, CustomField>()
     int issueCountsSkippedByBudget = 0
@@ -3680,12 +3805,35 @@ appFootprint(
              * Only workflow module descriptors answer this, so the duck-typed
              * call is also the type test. It is what makes an app condition or
              * validator attributable at all.
+             *
+             * It also joins the needles of the text scan. That scan only reaches
+             * for class needles when the plugin key produced no hit whatsoever,
+             * so this cannot inflate a count that already exists. What it fixes
+             * is the app whose ONLY workflow footprint is a condition or a
+             * validator: the plugin key appears nowhere in such a descriptor,
+             * and getModuleClass() hands back a Jira factory that appears
+             * nowhere either, so the workflow went unlisted entirely.
              */
             Object implementation = Fp.safeCall(descriptor, "getImplementationClass")
             if (implementation instanceof Class) {
                 String implementationName = ((Class) implementation).getName()
                 if (!implementationName.startsWith("java.") && !implementationName.startsWith("groovy.")) {
                     implementationClassOwners.putIfAbsent(implementationName, app.pluginKey)
+                    moduleClasses.add(implementationName)
+                }
+                /*
+                 * Answering getImplementationClass() is what makes this a
+                 * workflow module, so this is also the filter that keeps web
+                 * resources, servlets and REST modules out of the candidate set
+                 * used to name the module behind an entry.
+                 */
+                if (module.key != null && !module.key.isEmpty()) {
+                    Set<String> keysForApp = moduleKeysByPlugin.get(app.pluginKey)
+                    if (keysForApp == null) {
+                        keysForApp = new TreeSet<String>()
+                        moduleKeysByPlugin.put(app.pluginKey, keysForApp)
+                    }
+                    keysForApp.add(module.key)
                 }
             }
 
@@ -4092,6 +4240,9 @@ appFootprint(
     for (WorkflowExtension extension : allWorkflowExtensions) {
         Fp.resolveOwner(extension, attributionPluginKeys,
             implementationClassOwners, moduleClassOwners)
+        if (extension.ownerPluginKey != null) {
+            Fp.identifyModule(extension, moduleKeysByPlugin.get(extension.ownerPluginKey))
+        }
     }
 
     Fp.markOrdering(allWorkflowExtensions)
@@ -5622,9 +5773,14 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                         (extension.transitionId == null ? "" :
                             " <span class=\"muted\">#" + esc(extension.transitionId) + "</span>")
                 String moduleLabel = extension.moduleKey != null ? extension.moduleKey : extension.className
+                String moduleTitle = extension.moduleKey == null ?
+                    "The descriptor names no module, so the implementation class is shown instead" :
+                    (Fp.BY_DESCRIPTOR_ARGUMENT == extension.moduleKeySource ?
+                        "Module identified through an argument of this entry, matched against exactly one module of the app" :
+                        "Module named by the full.module.key argument")
                 String moduleCell = moduleLabel == null ?
                     "<span class=\"muted\">unknown</span>" :
-                    "<span class=\"mono\">" + esc(moduleLabel) + "</span>"
+                    "<span class=\"mono\" title=\"" + esc(moduleTitle) + "\">" + esc(moduleLabel) + "</span>"
                 String behindCell = extension.orderingRisk ?
                     "<span class=\"warn\" title=\"Another provider runs after this post function in the same chain\">" +
                         num(extension.followedByOther) + " of " + num(extension.followedBy) + "</span>" :
@@ -5639,7 +5795,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 <td class="num">${num(extension.position)} / ${num(extension.chainLength)}</td>
                 <td class="num">${behindCell}</td>
                 <td>${moduleCell}</td>
-                <td>${esc(extension.attribution)}</td>
+                <td>${esc(extension.attribution)}${Fp.BY_DESCRIPTOR_ARGUMENT == extension.moduleKeySource ? ' <span class="muted" title="The module name was derived from an argument of this entry, not read from the descriptor">&middot; module derived</span>' : ''}</td>
             </tr>
 """)
             }
