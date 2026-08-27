@@ -134,7 +134,7 @@ class Fp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "3.7"
+    static final String VERSION = "3.8"
 
     /* A needle can only occur inside a single token, so shorter tokens are
      * dropped. Needles below this length fall back to a raw scan. */
@@ -1345,6 +1345,7 @@ class WorkflowExtension {
             type: type,
             className: className,
             fullModuleKey: fullModuleKey,
+            ownerPluginKey: ownerPluginKey,
             moduleKey: moduleKey,
             moduleKeySource: moduleKeySource,
             attribution: attribution,

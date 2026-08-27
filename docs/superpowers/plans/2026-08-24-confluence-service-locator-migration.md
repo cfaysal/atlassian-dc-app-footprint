@@ -186,7 +186,7 @@ Confirm no unrelated behavior, warning suppression, API-model service import, cr
 ### Task 6: Synchronize the active ScriptRunner source and commit
 
 **Files:**
-- Modify: `D:/CFcon-DEV/My Scripts/scriptrunner/rest-endpoints/confluenceDCappFootprint.groovy`
+- Modify: `confluence/confluenceDCappFootprint.groovy`
 
 - [ ] **Step 1: Apply the verified endpoint diff to the active copy**
 
@@ -196,7 +196,7 @@ Apply the same endpoint patch to the active local source only after Task 5 is gr
 
 ```powershell
 Get-FileHash -Algorithm SHA256 'confluence\confluenceDCappFootprint.groovy'
-Get-FileHash -Algorithm SHA256 'D:\CFcon-DEV\My Scripts\scriptrunner\rest-endpoints\confluenceDCappFootprint.groovy'
+Get-FileHash -Algorithm SHA256 'confluence/confluenceDCappFootprint.groovy'
 ```
 
 Expected: the two SHA-256 values are identical.
@@ -240,7 +240,7 @@ check("both settings reads resolve GlobalSettingsManager",
 
 - [ ] **Step 2: Run the complete suite and prove RED**
 
-Run the existing plugin-dev Pod test command. Expected: the existing assertions remain
+Run the offline test suite as described in `jira/tests/README.md`. Expected: the existing assertions remain
 green and the new contract fails on `getAllSpaces()`, `SettingsManager`, missing API
 finder pagination, and missing `GlobalSettingsManager`.
 
@@ -257,7 +257,7 @@ git commit -m "OP-960 test: cover remaining Confluence deprecations"
 - Modify: `confluence/confluenceDCappFootprint.groovy:62-90,3713-3742,3978-3998,4154-4164`
 - Modify: `README.md`
 - Modify: `CHANGELOG.md`
-- Modify: `D:/CFcon-DEV/My Scripts/scriptrunner/rest-endpoints/confluenceDCappFootprint.groovy`
+- Modify: `confluence/confluenceDCappFootprint.groovy`
 
 - [ ] **Step 1: Import the current public APIs**
 
@@ -295,7 +295,7 @@ then extend the existing OP-960 changelog entry to name the API space finder and
 
 - [ ] **Step 5: Run GREEN verification**
 
-Run the full suite and parse check in plugin-dev. Then require no matches from:
+Run the full suite and parse check offline. Then require no matches from:
 
 ```bash
 rg -n '\.getAllSpaces\(|\bSettingsManager\b|SuppressWarnings\("deprecation"\)' confluence/confluenceDCappFootprint.groovy

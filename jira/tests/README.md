@@ -13,6 +13,35 @@ The classes free of every Jira type are `Fp`, `AppModuleInfo`, `ScreenPlacementI
 
 ## What is covered
 
+### The workflow extension point walk
+
+The report names every post function, condition, validator and pre function an app
+contributes to a workflow, with the transition and the position inside its chain. The walk
+is duck-typed against fake descriptors, so it runs without Jira on the classpath.
+
+- Position and chain length are carried on every entry, and conditional branches stay
+  separate chains: entries that can never run in sequence are never compared.
+- Nested condition groups resolve recursively without double counting, and a common action
+  referenced by several steps is reported once.
+- The ordering marker fires only for a post function with an entry from another provider
+  behind it in the same chain, and never for one that runs last.
+
+### Attribution, and the two ways it goes wrong
+
+- `full.module.key` concatenates the plugin key and the module key with **no separator**.
+  A control implementation that splits on a colon is run against the value Jira itself
+  ships, and fails exactly where the shipped rule succeeds.
+- The longest matching plugin key wins, so a shorter key cannot claim the modules of a
+  longer one it happens to prefix.
+- Jira writes that argument for post functions only. An app condition or validator carries
+  `class.name` alone, so the class index is the only path that finds it, and the index is
+  built from the implementation class rather than from `getModuleClass()`, which for a
+  workflow module often reports a Jira factory.
+- Naming the module behind such an entry is guarded four ways, and the case that broke the
+  first version is kept as a control: a validator configured on the `assignee` field, in an
+  app owning a module called `assignee-sync-function`, matches exactly one candidate and
+  would be confidently mislabelled. The shipped rule names nothing there.
+
 ### The decision parser
 
 The report can export its summary as a Confluence page carrying a **Decision** column that
@@ -105,6 +134,12 @@ application link call that writes the page, the search that finds spaces and par
 the move itself, the permission gate and both HTTP entry points. Test against a real
 instance before trusting a change to any of those.
 
+For the workflow walk specifically, the offline suite drives the descriptor fallback, not
+`JiraWorkflow.getAllActions()`, so the scope labels `Initial`, `Global` and `Common` come
+from a real instance or from nowhere. Two areas are outside the walk altogether and are not
+tested because they are not built: workflow registers and trigger functions, whose
+descriptor form has not been verified.
+
 ## Requirements
 
 A JDK and a Groovy 3 jar. Nothing else, no Maven build, no Jira, no ScriptRunner.
@@ -151,9 +186,12 @@ instance.
 
 ## Last recorded run
 
-2026-08-24: 452 assertions green, parse check green. Red-before-green measurement of the
-same run: eight position cases, the create-only control refuses six moves and claims four
-parents the measurement does not confirm.
+2026-08-27: 526 assertions green, parse check green. Red-before-green measurements of the
+same run: eight position cases, where the create-only control refuses six moves and claims
+four parents the measurement does not confirm; a split-on-colon control that finds no owner
+in the value Jira ships; and a match-anywhere control that names a post function module for
+a validator, where the shipped rule names nothing.
 
 Benchmark over 100 workflows, 19.3 million characters of XML and 100 apps: old scan
-3638 ms, new scan 912 ms, identical results.
+6369 ms, new scan 1252 ms, identical results at 847 references. The absolute numbers say
+more about the machine than about the code; the ratio is the point.

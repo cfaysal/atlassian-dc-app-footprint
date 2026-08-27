@@ -21,7 +21,7 @@ Assert that the endpoint contains exactly two `class="footprint-table"` tables i
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `bash.exe D:/CFcon-DEV/.runtime-cache/op962/run-offline-tests.sh jira`
+Run: the Jira offline suite, as described in `jira/tests/README.md`
 
 Expected: the new layout-contract assertions fail while the existing assertions remain green.
 
@@ -45,13 +45,13 @@ Use `<table class="footprint-table">` for both wide tables. Keep the compact Wor
 
 - [ ] **Step 3: Run the Jira suite**
 
-Run: `bash.exe D:/CFcon-DEV/.runtime-cache/op962/run-offline-tests.sh jira`
+Run: the Jira offline suite, as described in `jira/tests/README.md`
 
 Expected: all Jira assertions pass.
 
 - [ ] **Step 4: Run the parse check and diff check**
 
-Run: `bash.exe D:/CFcon-DEV/.runtime-cache/op962/run-offline-tests.sh parse`
+Run: the parse check, as described in `jira/tests/README.md`
 
 Run: `git diff --check`
 

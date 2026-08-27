@@ -20,12 +20,15 @@ published in this repository.
   exactly one matches. A ScriptRunner condition that read `GroovyCondition` now reads
   `scriptrunner-workflow-function-…AllSubtasksResolvedCondition`. Ambiguous cases stay empty
   rather than carrying a guess, and every row records how its module was named.
-- The naming rule is narrow on purpose, after an adversarial review found the first version
-  could be confidently wrong. Candidates are the app's workflow modules only; argument values
+- The naming rule is narrow on purpose (`3.7`), after an adversarial review found the first
+  version could be confidently wrong. Candidates are the app's workflow modules only; argument values
   must be namespaced identifiers of real length, so that a system field id or group name cannot
   name a module; the value must sit at the end of the key; and exactly one candidate must match.
   Measured on a live instance after the narrowing: the four ScriptRunner extension points still
   name their exact canned module, and exactly three entries instance-wide carry a derived name.
+- **Jira: every workflow extension point names its owning app in the JSON** (`3.8`). The owner
+  was only implied by which app's list an entry sat in, which a consumer reading the flat
+  extension list could not see.
 - **Jira: an app whose only workflow footprint is a condition or validator is no longer missed
   by the text scan.** Implementation classes joined the scan's needles. The scan reaches for
   class needles only when the plugin key produced no hit at all, so no existing count can grow
@@ -88,8 +91,7 @@ published in this repository.
   itself rather than from the submitted payload.
 - **Offline test suite for the Confluence endpoint.** It carries a control implementation
   of the discarded decision parser and asserts on every run that the real parser refuses
-  malformed input the control accepts. CI runs both suites: 273 assertions for Jira, 461
-  for Confluence.
+  malformed input the control accepts. CI runs both suites.
 - **Parent pages are searched while you type and created when they do not exist.** The
   result list stays until an entry is picked or the field is cleared, and a field with no
   match says the page will be created. There is no separate create button: a title with no

@@ -85,4 +85,4 @@ Automated tests cover exact boundaries, tiny and large instances, max-of-dimensi
 ratio capping, missing denominators, partial lower bounds, zero-footprint states,
 legacy-only behavior, export fields, sorting, and the Confluence Base URL block.
 Both Groovy suites must pass locally. The final scripts are then checked in the
-existing plugin-dev ScriptRunner environment without building a JAR.
+offline Groovy environment without building a JAR.

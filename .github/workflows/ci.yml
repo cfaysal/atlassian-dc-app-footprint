@@ -153,6 +153,37 @@ jobs:
           done
           exit $fail
 
+      # The scan above reads Groovy only, and that was the gap: internal absolute paths
+      # reached this repository through Markdown under docs/ and stayed there, because
+      # nothing looked at anything but the endpoints. This one reads every tracked text
+      # file.
+      #
+      # It matches on SHAPE, never on a name. A workstation path, a home directory and a
+      # private address are recognisable without knowing whose they are, and a list of
+      # internal hostnames in a public regular expression would publish exactly what it
+      # claims to protect. Name-level checks therefore stay in the maintainer's local
+      # tooling, and this gate does not pretend to cover them.
+      - name: Scan every tracked file for internal paths and addresses
+        run: |
+          set -uo pipefail
+          fail=0
+          for f in $(git ls-files); do
+            case "$f" in
+              .github/workflows/*|tools/sync-source.sh) continue ;;
+            esac
+            git check-attr -a "$f" >/dev/null 2>&1 || true
+            if ! grep -Iq . "$f" 2>/dev/null; then
+              continue
+            fi
+            hits=$(grep -nE '[A-Za-z]:[\\/](Users|CFcon|Program Files)|/home/[a-z][a-z0-9._-]+/|/Users/[a-z][a-z0-9._-]+/|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|\.m2/repository' "$f" || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::Internal path or address in a published file"
+              echo "$hits"
+              fail=1
+            fi
+          done
+          exit $fail
+
       # The Jira endpoint reaches Confluence over an application link, which is declared in
       # README and SECURITY. Everything else must stay call-free, and that is what this job
       # holds. Note what a raw-HTTP grep alone would miss: an application link call goes

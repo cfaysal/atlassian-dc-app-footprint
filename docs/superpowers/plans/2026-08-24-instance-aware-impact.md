@@ -260,9 +260,9 @@ git commit -m "OP-961 test: verify impact parity"
 
 Run `git diff pre-op961-instance-aware-impact..HEAD --stat`, `git diff --check`, and `git status --short --branch`. Expected: only the two scripts, their tests/readmes, repository README, design, and plan are changed; worktree clean after commits.
 
-- [ ] **Step 2: Run the existing plugin-dev ScriptRunner compile/type check**
+- [ ] **Step 2: Run the offline parse check**
 
-Use the established plugin-dev environment to validate both `.groovy` files against the Jira and Confluence Data Center APIs. Do not run Maven and do not build a JAR. Expected: both scripts receive the green ScriptRunner static/type result with no new deprecation warnings.
+Use an offline Groovy 3.0.21 environment to parse both `.groovy` files, as described in `jira/tests/README.md`. Do not run Maven and do not build a JAR. Expected: both scripts receive the green ScriptRunner static/type result with no new deprecation warnings.
 
 - [ ] **Step 3: Run behavior-preserving simplification review**
 
