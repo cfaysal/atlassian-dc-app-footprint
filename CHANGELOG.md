@@ -51,6 +51,15 @@ published in this repository.
   needs an instance, so the offline suite exercises all of it; `Db.probe` holds the four
   attempts, guards each one separately and is held to that by assertions read off the source.
   What did NOT come along is the dynamic typing that 4.9 wrapped it in.
+- **Jira: an installed but idle workflow capability is reported as such** (`3.9`). The report
+  used to print the same empty sentence in every app card, which made an app registering a
+  dozen workflow modules and using none look exactly like an app that cannot contribute one at
+  all. Three states are now separated: no workflow module renders no section, modules with
+  nothing configured are reported as a dormant capability with the modules listed, and
+  configured extension points render the table as before. The instance summary counts the
+  dormant apps, and the state reaches JSON and CSV.
+  Measured on a live instance: sections rendered fell from 72 to 4, and three apps surfaced as
+  dormant that were previously indistinguishable from the 68 without the capability.
 
 - **Jira: the module behind a condition or validator is named where the descriptor allows it**
   (`3.6`). The implementation class identifies the app but not the module: measured on one

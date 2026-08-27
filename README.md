@@ -285,6 +285,19 @@ another platform.
 The walk runs for every workflow, independent of the text scan, and it costs no extra
 retrieval: it reads the descriptor graph the script already holds in memory.
 
+### Installed but idle
+
+Most apps never touch a transition. On one instance, 304 installed apps, twelve registering a
+workflow module at all and two with anything configured. An app in between those two numbers
+is worth a line of its own: the capability is installed, nothing uses it, and no usage report
+can show it precisely because it is not being used. An administrator can enable it the day
+after an assessment was signed off.
+
+The report therefore separates three states rather than two. An app registering no workflow
+module gets no section at all. An app registering modules with none configured is reported as
+a **dormant capability**, with the modules it could contribute listed. An app with configured
+extension points gets the table above. The instance summary counts the dormant ones.
+
 One thing it deliberately does not do is invent a module name. Where the arguments cannot single
 out one module, the row shows the implementation class and no module key.
 

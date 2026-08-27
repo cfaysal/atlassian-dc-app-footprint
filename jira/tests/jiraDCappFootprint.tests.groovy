@@ -2028,6 +2028,47 @@ ok("a short namespaced value does not", !Fp.couldNameAModule("a.b.c"))
 ok("a value starting with a dot does not", !Fp.couldNameAModule(".hidden.but.long.enough.value"))
 ok("nothing does not", !Fp.couldNameAModule(null))
 
+/* ---- what an app can do to workflows, versus what it does ---------------- */
+
+/*
+ * Measured on jira-test: 304 installed apps, twelve register a workflow module,
+ * two have anything configured. The old report rendered the same empty sentence
+ * in all 302 remaining cards, which made the ten apps in the middle state look
+ * exactly like the 292 that cannot have an extension point at all.
+ *
+ * That middle state is the one a migration cares about. The capability is
+ * installed and idle, so no usage report shows it, and an administrator can
+ * switch it on the day after the assessment was signed off.
+ */
+check("an app with no workflow module has no capability to report",
+    Fp.workflowCapability(0, 0), Fp.CAPABILITY_NONE)
+check("modules registered and nothing configured is dormant, not absent",
+    Fp.workflowCapability(12, 0), Fp.CAPABILITY_DORMANT)
+check("one configured extension point makes it in use",
+    Fp.workflowCapability(12, 1), Fp.CAPABILITY_IN_USE)
+check("a single module is enough to be dormant",
+    Fp.workflowCapability(1, 0), Fp.CAPABILITY_DORMANT)
+
+/*
+ * Configured entries win over the module count, even where the count is zero.
+ * That combination is not hypothetical: an extension point attributed through
+ * the implementation class belongs to an app whose module list may have been
+ * unreadable, and reporting "no capability" over a measured entry would be a
+ * worse answer than the inconsistency itself.
+ */
+check("a measured extension point is never overruled by a missing module list",
+    Fp.workflowCapability(0, 3), Fp.CAPABILITY_IN_USE)
+
+/* the three states are distinct, which is the whole point of the change */
+ok("the three states are distinguishable",
+    [Fp.CAPABILITY_NONE, Fp.CAPABILITY_DORMANT, Fp.CAPABILITY_IN_USE].unique().size() == 3)
+
+/* red before green: one emptiness test cannot separate absent from dormant */
+def emptyOrNot = { int modules, int configured -> configured > 0 ? "has" : "empty" }
+ok("the control paints an app with twelve idle modules the same as one with none",
+    emptyOrNot(12, 0) == emptyOrNot(0, 0) &&
+    Fp.workflowCapability(12, 0) != Fp.workflowCapability(0, 0))
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed

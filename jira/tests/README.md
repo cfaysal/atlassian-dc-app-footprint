@@ -26,6 +26,12 @@ is duck-typed against fake descriptors, so it runs without Jira on the classpath
 - The ordering marker fires only for a post function with an entry from another provider
   behind it in the same chain, and never for one that runs last.
 
+### Installed but idle
+
+An app registering workflow modules and configuring none of them is a different state from an
+app that cannot contribute one at all, and the tests keep them apart. A control that only asks
+whether the extension list is empty paints both the same, which is what the report used to do.
+
 ### Attribution, and the two ways it goes wrong
 
 - `full.module.key` concatenates the plugin key and the module key with **no separator**.
@@ -186,7 +192,7 @@ instance.
 
 ## Last recorded run
 
-2026-08-27: 526 assertions green, parse check green. Red-before-green measurements of the
+2026-08-27: 533 assertions green, parse check green. Red-before-green measurements of the
 same run: eight position cases, where the create-only control refuses six moves and claims
 four parents the measurement does not confirm; a split-on-colon control that finds no owner
 in the value Jira ships; and a match-anywhere control that names a post function module for

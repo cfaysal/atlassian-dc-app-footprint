@@ -535,6 +535,26 @@ class Fp {
     static final String ARG_CLASS_NAME = "class.name"
     static final String ARG_FULL_MODULE_KEY = "full.module.key"
 
+    /*
+     * What an app can do to workflows, as opposed to what it does.
+     *
+     * An app registering no workflow module cannot contribute an extension point
+     * at all, and saying so in every card is filler. An app that registers one
+     * and has none configured is the interesting middle: the capability is
+     * installed and dormant, an administrator can enable it tomorrow, and no
+     * usage report shows it precisely because it is not being used.
+     */
+    static final String CAPABILITY_NONE = "None"
+    static final String CAPABILITY_DORMANT = "Dormant"
+    static final String CAPABILITY_IN_USE = "In use"
+
+    static String workflowCapability(int workflowModuleCount, int extensionPointCount) {
+        if (extensionPointCount > 0) {
+            return CAPABILITY_IN_USE
+        }
+        return workflowModuleCount > 0 ? CAPABILITY_DORMANT : CAPABILITY_NONE
+    }
+
     static final String BY_MODULE_KEY = "Module key"
     static final String BY_MODULE_CLASS = "Module class"
 
@@ -1617,6 +1637,9 @@ class AppFootprint {
     List<CustomFieldFootprint> customFields = new ArrayList<CustomFieldFootprint>()
     List<WorkflowReference> workflowReferences = new ArrayList<WorkflowReference>()
     List<WorkflowExtension> workflowExtensions = new ArrayList<WorkflowExtension>()
+
+    /* workflow modules this app registers, whether or not any is configured */
+    List<String> workflowModuleKeys = new ArrayList<String>()
     List<String> diagnostics = new ArrayList<String>()
 
     /* aggregates, computed exactly once by finish() */
@@ -1646,6 +1669,7 @@ class AppFootprint {
     int extensionWorkflowCount
     int extensionTransitionCount
     int orderingRiskCount
+    String workflowCapability = Fp.CAPABILITY_NONE
 
     int footprintSignals
     boolean detected
@@ -1810,6 +1834,7 @@ class AppFootprint {
         }
         extensionWorkflowCount = extensionWorkflows.size()
         extensionTransitionCount = extensionTransitions.size()
+        workflowCapability = Fp.workflowCapability(workflowModuleKeys.size(), extensionPointCount)
 
         /*
          * An extension point counts as detection: the structural walk finds one
@@ -2051,6 +2076,9 @@ class AppFootprint {
                 archivedProjectWorkflowCount: archivedProjectWorkflowCount,
                 workflowReachPartitionPartial: workflowReachPartitionPartial,
                 workflowReferences: workflowReferenceCount,
+                workflowCapability: workflowCapability,
+                workflowModules: workflowModuleKeys.size(),
+                workflowModuleKeys: workflowModuleKeys,
                 extensionPoints: extensionPointCount,
                 postFunctions: postFunctionCount,
                 conditions: conditionCount,
@@ -3835,6 +3863,9 @@ appFootprint(
                         moduleKeysByPlugin.put(app.pluginKey, keysForApp)
                     }
                     keysForApp.add(module.key)
+                    if (!app.workflowModuleKeys.contains(module.key)) {
+                        app.workflowModuleKeys.add(module.key)
+                    }
                 }
             }
 
@@ -4370,6 +4401,7 @@ appFootprint(
     int totalScreenPlacements = 0
     int totalWorkflowReferences = 0
     int totalExtensionPoints = 0
+    int totalDormantWorkflowApps = 0
     int totalPostFunctions = 0
     int totalOrderingRisks = 0
     int totalDiagnostics = globalDiagnostics.size()
@@ -4420,6 +4452,9 @@ appFootprint(
         totalScreenPlacements += app.screenPlacements
         totalWorkflowReferences += app.workflowReferenceCount
         totalExtensionPoints += app.extensionPointCount
+        if (Fp.CAPABILITY_DORMANT == app.workflowCapability) {
+            totalDormantWorkflowApps++
+        }
         totalPostFunctions += app.postFunctionCount
         totalOrderingRisks += app.orderingRiskCount
         totalDiagnostics += app.diagnosticCount
@@ -4637,6 +4672,7 @@ appFootprint(
         csv.append("impact,impactMaxPercent,impactPartial,impactReasons,impactDimensions,")
         csv.append("modules,enabledModules,customFields,issueFieldAssociations,activeIssueFieldAssociations,archivedIssueFieldAssociations,associationState,issueSplitState,issueCountsComplete,issueSplitComplete,")
         csv.append("screenPlacements,uniqueScreens,workflows,activeWorkflows,workflowReferences,")
+        csv.append("workflowCapability,workflowModules,")
         csv.append("extensionPoints,postFunctions,conditions,validators,preFunctions,")
         csv.append("extensionWorkflows,extensionTransitions,orderingRisks,")
         csv.append("impactedProjects,impactedIssues,activeImpactedProjects,archivedImpactedProjects,unknownImpactedProjects,activeImpactedIssues,archivedImpactedIssues,reachState,activeReachState,archivedReachState,impactComplete,restModules,servletModules,")
@@ -4684,6 +4720,8 @@ appFootprint(
             csv.append(app.workflowCount).append(",")
             csv.append(app.activeWorkflowCount).append(",")
             csv.append(app.workflowReferenceCount).append(",")
+            csv.append(Fp.csv(app.workflowCapability)).append(",")
+            csv.append(app.workflowModuleKeys.size()).append(",")
             csv.append(app.extensionPointCount).append(",")
             csv.append(app.postFunctionCount).append(",")
             csv.append(app.conditionCount).append(",")
@@ -5176,6 +5214,10 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="summary-label">Ordering Dependencies</div>
     </div>
     <div class="summary-card">
+        <div class="summary-value">${num(totalDormantWorkflowApps)}</div>
+        <div class="summary-label">Dormant Workflow Capability</div>
+    </div>
+    <div class="summary-card">
         <div class="summary-value">${includeReach ? num(allActiveImpactedSpaces.size()) : '<span class="muted">off</span>'}</div>
         <div class="summary-label">Projects Touched \u00B7 Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete) ? '<span class="warn" title="Active Project reach is incomplete">&#42;</span>' : ""}</div>
     </div>
@@ -5471,8 +5513,8 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="metric-label">Workflow References</div>
     </div>
     <div class="metric">
-        <div class="metric-value">${num(app.extensionPointCount)}</div>
-        <div class="metric-label">Extension Points${app.extensionPointCount > 0 ? " &middot; " + num(app.postFunctionCount) + " Post Fn" : ""}</div>
+        <div class="metric-value">${Fp.CAPABILITY_DORMANT == app.workflowCapability ? '<span class="muted" title="Workflow modules are installed but none is configured">dormant</span>' : num(app.extensionPointCount)}</div>
+        <div class="metric-label">Extension Points${app.extensionPointCount > 0 ? " &middot; " + num(app.postFunctionCount) + " Post Fn" : (Fp.CAPABILITY_DORMANT == app.workflowCapability ? " &middot; " + num(app.workflowModuleKeys.size()) + " available" : "")}</div>
     </div>
     <div class="metric">
         <div class="metric-value">${app.orderingRiskCount > 0 ? '<span class="warn">' + num(app.orderingRiskCount) + '</span>' : num(app.orderingRiskCount)}</div>
@@ -5715,13 +5757,32 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         }
 
         html.append("""</div>
+""")
 
-<div class="section">
+        /*
+         * An app that registers no workflow module cannot contribute an
+         * extension point, so it gets no section at all rather than a paragraph
+         * saying it contributed nothing. What used to be one empty state
+         * covering both cases hid the one that matters.
+         */
+        if (Fp.CAPABILITY_NONE != app.workflowCapability) {
+
+        html.append("""<div class="section">
     <div class="section-title">Workflow Extension Points</div>
 """)
 
         if (app.workflowExtensions.isEmpty()) {
-            html.append("""    <div class="empty">This app contributes no post function, condition, validator or pre function to any workflow descriptor.</div>\n""")
+            html.append("""    <div class="empty">Dormant capability. This app registers ${num(app.workflowModuleKeys.size())} workflow extension module(s) and none of them is configured in any workflow on this instance. Nothing uses it today, and nothing stops an administrator from using it tomorrow.</div>
+    <details>
+        <summary>The ${num(app.workflowModuleKeys.size())} module(s) it could contribute</summary>
+        <ul>
+""")
+            for (String moduleKey : app.workflowModuleKeys) {
+                html.append("""            <li class="mono">${esc(moduleKey)}</li>\n""")
+            }
+            html.append("""        </ul>
+    </details>
+""")
         } else {
             List<WorkflowExtension> ordered = new ArrayList<WorkflowExtension>(app.workflowExtensions)
             ordered.sort { WorkflowExtension a, WorkflowExtension b ->
@@ -5812,6 +5873,8 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
 
         html.append("""</div>
 """)
+
+        }
 
         /* ---- Diagnostics --------------------------------------------------- */
 
