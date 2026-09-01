@@ -1929,6 +1929,24 @@ ok("the SAL callback is still a hand-built JDK proxy",
     endpointText.contains("Proxy.newProxyInstance(") && endpointText.contains("new InvocationHandler()"))
 check("the proxy is built in exactly one place", endpointText.count("Proxy.newProxyInstance("), 1)
 
+/* ---- 29. the source carries no raw byte above ASCII ----------------------- */
+
+/* ScriptRunner compiles this file with the default charset of the JVM it runs in,
+ * which is a property of the server and not of this repository. A raw multi-byte
+ * glyph in a string therefore decodes to whatever that charset makes of it -
+ * measured: the same literal reads as the character under UTF-8 and as U+FFFD
+ * under US-ASCII. The escape removes the dependency; this assertion keeps it
+ * removed. The CI gate says the same thing about every tracked Groovy file; this
+ * one is here so a run of the suite alone already fails on it. */
+int aboveAscii = 0
+for (int index = 0; index < endpointText.length(); index++) {
+    if (endpointText.charAt(index) > (char) 0x7F) {
+        aboveAscii++
+    }
+}
+check("no raw character above ASCII survives in the source", aboveAscii, 0)
+ok("the glyphs that were raw are still there, as escapes",
+    endpointText.contains("\\u2014") && endpointText.contains("\\u00B7"))
 check("the report names the version that produced it", Cfp.VERSION, "4.10")
 
 /* ---- result --------------------------------------------------------------- */

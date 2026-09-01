@@ -209,3 +209,51 @@ jobs:
             fi
           done
           exit $fail
+
+      # OP-1064. A raw byte above ASCII in a Groovy string is decoded with the
+      # DEFAULT charset of the JVM that compiles the file, and for these scripts
+      # that JVM is the customer's ScriptRunner rather than this runner. Measured
+      # on Groovy 3.0.21: the same string literal reads as the intended character
+      # under -Dfile.encoding=UTF-8 and as U+FFFD under US-ASCII, while the escape
+      # \uXXXX reads as the intended character under both. A report that looked
+      # right once therefore proves nothing; the escape removes the dependency and
+      # this gate keeps it removed.
+      #
+      # Python and not grep, deliberately. A grep -P pattern is a GNU pattern: BSD
+      # grep has no -P at all, and the || true that keeps such a step from breaking
+      # the build swallows the error with it - the step then reports green without
+      # having looked at anything. This one decodes the file itself and behaves the
+      # same on every platform, including a maintainer's laptop.
+      - name: Refuse a raw character above ASCII in a tracked Groovy file
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io, subprocess, sys
+
+          listed = subprocess.run(["git", "ls-files", "-z", "*.groovy"],
+                                  capture_output=True, check=True).stdout
+          names = [n.decode("utf-8") for n in listed.split(b"\0") if n]
+          raw = 0
+          for name in names:
+              try:
+                  text = io.open(name, encoding="utf-8").read()
+              except UnicodeDecodeError as error:
+                  print("::error file=%s::Not valid UTF-8, so it was not checked: %s"
+                        % (name, error))
+                  raw += 1
+                  continue
+              line = 1
+              for char in text:
+                  if char == "\n":
+                      line += 1
+                  elif ord(char) > 0x7F:
+                      raw += 1
+                      print("::error file=%s,line=%d::Raw U+%04X in a published Groovy "
+                            "file. ScriptRunner compiles this script with the default "
+                            "charset of the server JVM, so a raw byte above ASCII decodes "
+                            "to whatever that charset makes of it. Write it as \\u%04X."
+                            % (name, line, ord(char), ord(char)))
+          print("checked %d Groovy file(s), found %d raw character(s) above ASCII"
+                % (len(names), raw))
+          sys.exit(1 if raw else 0)
+          PY

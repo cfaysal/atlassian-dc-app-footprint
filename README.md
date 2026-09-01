@@ -10,7 +10,7 @@ These scripts measure that difference.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.8 |
+| [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.9 |
 | [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.10 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,

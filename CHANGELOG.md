@@ -151,6 +151,21 @@ published in this repository.
 
 ### Changed
 
+- **Every glyph above ASCII in both endpoints is written as a `\uXXXX` escape, and a CI gate
+  keeps it that way** (`4.10` / Jira `3.9`). Twelve raw characters sat in Confluence output
+  strings and fourteen in the Jira ones, eleven of them `\u00B7` separators and the rest the
+  `\u2014` placeholder in `NA`. ScriptRunner compiles a script with the DEFAULT charset of
+  the server JVM, which is a property of the customer's server and not of this repository.
+  Measured on Groovy 3.0.21 with the identical source file: the raw literal reads as the
+  intended character under `-Dfile.encoding=UTF-8`, as `U+FFFD` under `US-ASCII` and as
+  mojibake under `ISO-8859-1`, while `\uXXXX` reads as the intended character under all
+  three. That the report looked correct after a fresh registration proves nothing; it was
+  read on one charset. The escape removes the dependency instead of observing it.
+  The gate is written in Python rather than as a `grep -P` pattern. The neighbouring
+  control-byte gate in the sibling repository is a `grep -P` with a `|| true`: BSD grep has
+  no `-P`, the error is swallowed, and the step reports green on a maintainer's Mac without
+  having read a byte - observed while writing this. A gate that passes without checking is
+  worse than none.
 - **Confluence page and space reads use persistence service locators.** Deprecated
   `PageManager.getPage(...)` and `SpaceManager.getSpace(...)` lookups were replaced with
   `PageService` and `SpaceService` locators. `PageManager` remains only for non-deprecated

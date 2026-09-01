@@ -925,10 +925,10 @@ ok("Jira wide footprint tables wrap headers and long cell values locally",
     endpointText.contains('.footprint-table th { white-space: normal;') &&
     endpointText.contains('.footprint-table td { overflow-wrap: anywhere; }'))
 ok("Jira Custom Field Footprint uses compact measurement headers",
-    endpointText.contains('<th class="num" title="Issues With Value · Active">Issues · Active</th>') &&
-    endpointText.contains('<th class="num" title="Issues With Value · Archived">Issues · Archived</th>') &&
-    endpointText.contains('<th title="Active Projects Reached Via Screens">Screen Reach · Active</th>') &&
-    endpointText.contains('<th title="Archived Projects Reached Via Screens">Screen Reach · Archived</th>'))
+    endpointText.contains('<th class="num" title="Issues With Value \\u00B7 Active">Issues \\u00B7 Active</th>') &&
+    endpointText.contains('<th class="num" title="Issues With Value \\u00B7 Archived">Issues \\u00B7 Archived</th>') &&
+    endpointText.contains('<th title="Active Projects Reached Via Screens">Screen Reach \\u00B7 Active</th>') &&
+    endpointText.contains('<th title="Archived Projects Reached Via Screens">Screen Reach \\u00B7 Archived</th>'))
 ok("Jira Workflow Footprint uses compact reach headers",
     endpointText.contains('<th>Active Projects</th>') &&
     endpointText.contains('<th>Archived Projects</th>') &&
@@ -1029,9 +1029,9 @@ ok("Jira app cards expose archived Issue associations",
     endpointText.contains('num(app.archivedIssueFieldAssociations)') &&
     endpointText.contains('Issue Associations &middot; Archived'))
 ok("Jira active summary uses the active reach completeness flag",
-    endpointText.contains('Projects Touched · Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete)'))
+    endpointText.contains('Projects Touched \\u00B7 Active${includeReach && (activeReachTotalsPartial || activeReachInventoryIncomplete)'))
 ok("Jira archived summary uses the archived reach completeness flag",
-    endpointText.contains('Projects Touched · Archived${includeReach && includeArchived && (archivedReachTotalsPartial || archivedReachInventoryIncomplete)'))
+    endpointText.contains('Projects Touched \\u00B7 Archived${includeReach && includeArchived && (archivedReachTotalsPartial || archivedReachInventoryIncomplete)'))
 ok("Jira association summaries render off when the split is disabled",
     endpointText.contains('${issueCounts && includeArchived ? num(totalActiveIssueFieldAssociations)') &&
     endpointText.contains('${issueCounts && includeArchived ? num(totalArchivedIssueFieldAssociations)'))
