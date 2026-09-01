@@ -31,6 +31,25 @@ published in this repository.
 
 ### Added
 
+- **A probe that locates where ScriptRunner keeps its macro registry**
+  (`confluence/tools/scriptRunnerRegistryProbe.groovy`, `0.1`). The macro name sources the
+  report uses carry no macro body: verified against the Confluence javadoc, `MacroMetadata`
+  exposes name, plugin key, aliases, categories, title, description, icon and hidden, and
+  nothing returning a template or source. The body of a runtime-defined macro therefore sits
+  in the owning app's own store, and where that store is on a running instance is not
+  something an export format answers.
+  Read on a customer instance from ScriptRunner's own registry export, structure only and no
+  value opened: 17 macros, one JSON entry each, and a two-slot field
+  `FIELD_SCRIPT_FILE_OR_SCRIPT`. Slot 0 held multi-line code for 11 of them, 1543 to 7187
+  characters, never ending in `.groovy`; slot 1 held a path for the other 6, always ending in
+  `.groovy` and never multi-line.
+  The probe is admin-gated and strictly read-only, and it never prints a cell value: table
+  names, column names, counts, and whether an administrator-supplied marker occurs in a given
+  column. A probe that solved a locating problem by dumping the store would have created a
+  worse one, because macro bodies and plugin configuration routinely carry credentials,
+  internal addresses and SQL. Two controls come first, the executor and a non-empty
+  catalogue, so an empty candidate list is never mistaken for evidence of absence.
+
 - **Confluence: a macro an app builds at runtime is no longer invisible** (`4.11`). The
   content index is queried once per macro name that is known before the scan, and the
   names came from one place only: a module descriptor implementing `MacroMetadataSource`.

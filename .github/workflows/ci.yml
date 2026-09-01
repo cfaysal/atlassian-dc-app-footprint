@@ -65,7 +65,8 @@ jobs:
         run: |
           set -euo pipefail
           found=0
-          for f in jira/jiraDCappFootprint.groovy confluence/confluenceDCappFootprint.groovy; do
+          for f in jira/jiraDCappFootprint.groovy confluence/confluenceDCappFootprint.groovy \
+                   confluence/tools/scriptRunnerRegistryProbe.groovy; do
             if [ -f "$f" ]; then
               found=1
               echo "::group::parse $f"
