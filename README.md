@@ -11,7 +11,7 @@ These scripts measure that difference.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.8 |
-| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.7 |
+| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.8 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
 building the removal-risk section of an audit report, or justifying to a budget owner
@@ -148,6 +148,15 @@ application links you have configured; the Confluence endpoint writes into its o
 instance and needs no link at all. Then pick a space, optionally name a parent page, give
 the page a title, and submit. A repeat run updates the same page instead of creating a
 second one, and the answer carries a link to it.
+
+The Confluence endpoint reads its space list straight from the `SPACES` table, through
+ScriptRunner's read-only executor, restricted to `CURRENT` spaces with the status passed as
+a bound parameter. It is the only statement either script runs and it is a `SELECT`. The
+Confluence service that used to answer this is a Spring AOP proxy that cannot be resolved
+from inside a ScriptRunner REST endpoint, so the picker refused on every instance it was
+opened on. The columns are verified through the database catalogue before the statement
+runs: a column that moved in an upgrade is named in the refusal rather than turning into a
+list of every space there is.
 
 The parent page field searches while you type and the result list stays until you pick an
 entry or clear the field. If no page matches, the field says so and the parent is created

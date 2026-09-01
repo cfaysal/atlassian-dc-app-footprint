@@ -1560,12 +1560,24 @@ ok("API Expansion is imported for an explicitly typed empty varargs call",
     endpointText.contains("import com.atlassian.confluence.api.model.Expansion"))
 ok("API SpaceFinder is imported for ScriptRunner static checking",
     endpointText.contains("import com.atlassian.confluence.api.service.content.SpaceService.SpaceFinder"))
-check("the API space finder keeps an explicit static type",
-    endpointText.count("SpaceFinder currentSpaceFinder = apiSpaceService.find(new Expansion[0])"), 1)
-check("the current-space finder is paginated", endpointText.count(".withStatus(ApiSpaceStatus.CURRENT)"), 1)
-check("pagination fetches through the typed finder",
-    endpointText.count("currentSpaceFinder.fetchMany("), 1)
-check("space pagination checks for more results", endpointText.count("spacePage.hasMore()"), 1)
+/* These four assertions used to pin the paginated API-layer space read: the
+   explicitly typed SpaceFinder, the CURRENT restriction, fetchMany and hasMore.
+   They are inverted rather than deleted, because the path they described is the
+   one measured broken on a customer instance under OP-1063: resolving
+   api.service.content.SpaceService throws, so the stage refused every time it was
+   opened. What has to hold now is that nothing resolves or calls that type again,
+   while the imports stay with the reason attached. */
+check("the API space finder is no longer resolved",
+    endpointText.count("ComponentLocator.getComponent(ApiSpaceService.class)"), 0)
+check("no API space finder is constructed",
+    endpointText.count("apiSpaceService.find("), 0)
+check("no API-layer status restriction is applied",
+    endpointText.count(".withStatus(ApiSpaceStatus.CURRENT)"), 0)
+check("no API-layer pagination remains", endpointText.count("fetchMany("), 0)
+check("no API-layer paging check remains", endpointText.count("spacePage.hasMore()"), 0)
+ok("the retired API space read names the type rather than the whole layer",
+    endpointText.contains("com.atlassian.confluence.api.service.content.SpaceService. That concrete type is") &&
+    endpointText.contains("api.service.settings"))
 ok("GlobalSettingsManager is imported",
     endpointText.contains("import com.atlassian.confluence.setup.settings.GlobalSettingsManager"))
 check("all settings reads resolve GlobalSettingsManager",
@@ -1624,6 +1636,173 @@ ok("Confluence JSON summary exports the candidate count",
     endpointText.contains("decommissionCandidates: decommissionCandidates.size()"))
 ok("Confluence page-export summary exports the candidate count",
     endpointText.contains('exportSummary.put("decommissionCandidates", Integer.valueOf(decommissionCandidates.size()))'))
+
+/* ---- 27. the space picker reads the database, never a Spring proxy -------- */
+
+/* The picker used to resolve com.atlassian.confluence.api.service.content.SpaceService.
+   That concrete type is a Spring AOP proxy and its resolution throws inside a
+   ScriptRunner endpoint, so the stage refused on every instance it was opened on.
+   These assertions hold the replacement: the list comes from a SELECT on SPACES,
+   the status is a BOUND parameter, and every way the read can fail stays a failed
+   read rather than becoming an empty or an unrestricted list. */
+
+def pickerShape = { List<String> missing, String failure ->
+    Map<String, Object> shape = new LinkedHashMap<String, Object>()
+    shape.put("table", "spaces")
+    shape.put("missing", missing)
+    shape.put("failure", failure)
+    return shape
+}
+
+def pickerFound = { List<Map<String, String>> rows, boolean truncated, String failure ->
+    Map<String, Object> found = new LinkedHashMap<String, Object>()
+    found.put("rows", rows)
+    found.put("truncated", Boolean.valueOf(truncated))
+    found.put("failure", failure)
+    found.put("cap", Integer.valueOf(SpaceCatalog.CAP))
+    return found
+}
+
+def pickerRow = { String key, String name ->
+    Map<String, String> row = new LinkedHashMap<String, String>()
+    row.put("spacekey", key)
+    row.put("spacename", name)
+    return row
+}
+
+/* --- the statement itself: SELECT only, and the status is bound ----------- */
+
+ok("picker verifies the column it restricts on", SpaceCatalog.COLUMNS.contains("spacestatus"))
+ok("picker verifies the columns it reads",
+    SpaceCatalog.COLUMNS.containsAll(["spacekey", "spacename"]))
+ok("picker restricts on the space status", SpaceCatalog.SQL.contains("s.spacestatus = ?"))
+check("picker binds exactly one value", SpaceCatalog.SQL.count("?"), 1)
+ok("picker never pastes the status into the statement", !SpaceCatalog.SQL.contains("CURRENT"))
+check("the bound status is the stored spelling of SpaceStatus.CURRENT",
+    SpaceCatalog.STATUS_CURRENT, "CURRENT")
+ok("picker statement is a SELECT", SpaceCatalog.SQL.trim().startsWith("SELECT "))
+ok("picker statement writes nothing",
+    !(SpaceCatalog.SQL.toUpperCase(Locale.ROOT) =~ /\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|TRUNCATE)\b/).find())
+ok("picker orders in SQL by the order it announces",
+    SpaceCatalog.SQL.contains("ORDER BY LOWER(s.spacename), LOWER(s.spacekey)") &&
+    SpaceCatalog.ORDER == "space name, then space key")
+ok("picker puts no string literal into a text expression", !SpaceCatalog.SQL.contains("''"))
+
+/* --- the list is built ---------------------------------------------------- */
+
+Map<String, Object> pickerOk = SpaceCatalog.spaceList(pickerShape([], null),
+    pickerFound([pickerRow("DOCS", "Documentation"), pickerRow("OPS", "  "), pickerRow(null, "orphan")],
+        false, null))
+check("a successful read reports ok", pickerOk.get("ok"), Boolean.TRUE)
+check("a successful read carries no error", pickerOk.get("error"), null)
+check("a successful read lists every row that names a space",
+    ((List<Map<String, Object>>) pickerOk.get("spaces")).size(), 2)
+check("a listed space carries its key",
+    ((List<Map<String, Object>>) pickerOk.get("spaces")).get(0).get("key"), "DOCS")
+check("a listed space carries its name",
+    ((List<Map<String, Object>>) pickerOk.get("spaces")).get(0).get("name"), "Documentation")
+check("a nameless space is labelled with its key",
+    ((List<Map<String, Object>>) pickerOk.get("spaces")).get(1).get("name"), "OPS")
+check("a row without a key costs itself and not the list",
+    ((List<Map<String, Object>>) pickerOk.get("spaces")).size(), 2)
+check("a successful read carries the cap it read under", pickerOk.get("cap"), Integer.valueOf(SpaceCatalog.CAP))
+check("a successful read carries the ordering the cap cut by", pickerOk.get("order"), SpaceCatalog.ORDER)
+check("an uncut read says so", pickerOk.get("truncated"), Boolean.FALSE)
+
+Map<String, Object> pickerCut = SpaceCatalog.spaceList(pickerShape([], null),
+    pickerFound([pickerRow("A", "Alpha")], true, null))
+check("a cut read says so", pickerCut.get("truncated"), Boolean.TRUE)
+check("a cut read is still a successful read", pickerCut.get("ok"), Boolean.TRUE)
+
+/* --- a missing column is named, and never becomes a list ------------------ */
+
+Map<String, Object> pickerMissing = SpaceCatalog.spaceList(pickerShape(["spacestatus"], null), null)
+check("a missing column is a failed read", pickerMissing.get("ok"), Boolean.FALSE)
+ok("a missing column is named", String.valueOf(pickerMissing.get("error")).contains("spacestatus"))
+ok("a missing column names the table it was expected in",
+    String.valueOf(pickerMissing.get("error")).contains("spaces"))
+ok("a missing column is not an instance without spaces",
+    String.valueOf(pickerMissing.get("error")).contains(SpaceCatalog.NOT_EMPTY))
+check("a missing column yields no list at all",
+    ((List<Map<String, Object>>) pickerMissing.get("spaces")).size(), 0)
+
+Map<String, Object> pickerTwoMissing = SpaceCatalog.spaceList(
+    pickerShape(["spacename", "spacestatus"], null), null)
+ok("both missing columns are named",
+    String.valueOf(pickerTwoMissing.get("error")).contains("spacename, spacestatus"))
+
+check("a clean shape reports no problem", SpaceCatalog.shapeProblem(pickerShape([], null)), null)
+ok("a single missing column is named in the singular",
+    SpaceCatalog.shapeProblem(pickerShape(["spacekey"], null)).contains("the column spacekey"))
+ok("several missing columns are named in the plural",
+    SpaceCatalog.shapeProblem(pickerShape(["spacekey", "spacename"], null)).contains("the columns spacekey, spacename"))
+
+/* --- a failed read never becomes an empty list ---------------------------- */
+
+Map<String, Object> pickerCatalogue = SpaceCatalog.spaceList(
+    pickerShape([], "The database catalogue could not be read: SQLException - no connection"), null)
+check("an unreadable catalogue is a failed read", pickerCatalogue.get("ok"), Boolean.FALSE)
+ok("an unreadable catalogue carries its reason",
+    String.valueOf(pickerCatalogue.get("error")).contains("SQLException - no connection"))
+ok("an unreadable catalogue is not an instance without spaces",
+    String.valueOf(pickerCatalogue.get("error")).contains(SpaceCatalog.NOT_EMPTY))
+check("an unreadable catalogue yields no list", ((List) pickerCatalogue.get("spaces")).size(), 0)
+
+Map<String, Object> pickerStatementFailed = SpaceCatalog.spaceList(pickerShape([], null),
+    pickerFound([], false, "The statement failed: SQLSyntaxErrorException - ORA-00942"))
+check("a failed statement is a failed read", pickerStatementFailed.get("ok"), Boolean.FALSE)
+ok("a failed statement carries its reason",
+    String.valueOf(pickerStatementFailed.get("error")).contains("ORA-00942"))
+ok("a failed statement is not an instance without spaces",
+    String.valueOf(pickerStatementFailed.get("error")).contains(SpaceCatalog.NOT_EMPTY))
+check("a failed statement yields no list", ((List) pickerStatementFailed.get("spaces")).size(), 0)
+
+Map<String, Object> pickerNothingRead = SpaceCatalog.spaceList(pickerShape([], null), null)
+check("a read that returned nothing at all is a failed read", pickerNothingRead.get("ok"), Boolean.FALSE)
+ok("a read that returned nothing at all is not an instance without spaces",
+    String.valueOf(pickerNothingRead.get("error")).contains(SpaceCatalog.NOT_EMPTY))
+check("a read that returned nothing at all yields no list",
+    ((List) pickerNothingRead.get("spaces")).size(), 0)
+
+Map<String, Object> pickerNoShape = SpaceCatalog.spaceList(null, pickerFound([pickerRow("X", "X")], false, null))
+check("a missing shape check is a failed read", pickerNoShape.get("ok"), Boolean.FALSE)
+check("a missing shape check never yields an unverified list",
+    ((List) pickerNoShape.get("spaces")).size(), 0)
+
+/* --- an empty instance is not a failure ----------------------------------- */
+
+Map<String, Object> pickerEmpty = SpaceCatalog.spaceList(pickerShape([], null), pickerFound([], false, null))
+check("an instance without a current space is a successful read", pickerEmpty.get("ok"), Boolean.TRUE)
+check("an instance without a current space lists nothing",
+    ((List) pickerEmpty.get("spaces")).size(), 0)
+
+/* --- the source contract of the spaces branch ----------------------------- */
+
+Matcher spacesBranch = Pattern.compile("(?s)if \\(requestedAction == \"spaces\"\\) \\{(.*?)\\n    if \\(requestedAction == \"pages\"\\)")
+    .matcher(endpointText)
+ok("the spaces branch can be located", spacesBranch.find())
+String spacesBranchText = spacesBranch.find(0) ? spacesBranch.group(1) : ""
+ok("the spaces branch resolves no api.service.content type at all",
+    !spacesBranchText.contains("ApiSpace"))
+ok("the spaces branch takes the read-only executor",
+    spacesBranchText.contains("Db.factory()") && spacesBranchText.contains("Db.withConnection(executorFactory)"))
+ok("the spaces branch reads the space rows through the database",
+    spacesBranchText.contains("Db.spaceRows(connection)"))
+check("the fail-loud sentence is unchanged", SpaceCatalog.NOT_EMPTY,
+    "That is a failed read, not an instance without spaces.")
+check("every refusal of the spaces branch ends in it",
+    spacesBranchText.count("SpaceCatalog.NOT_EMPTY"), 3)
+check("every failed read of the stage refuses instead of answering",
+    spacesBranchText.count("return refuse(500, \"spaces\""), 5)
+ok("the picker binds the status rather than pasting it",
+    endpointText.contains("query(connection, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT]"))
+ok("the endpoint runs no write statement", !endpointText.contains("executeUpdate("))
+ok("the endpoint prepares statements only from its own constants",
+    endpointText.count("prepareStatement(") == 1 && endpointText.contains("connection.prepareStatement(sql)"))
+ok("the retired API SpaceService import states why it is kept",
+    endpointText.contains("no longer resolved") && endpointText.contains("SpringProxy"))
+ok("the picker announces a cut list in the browser",
+    endpointText.contains("body.truncated===true"))
 
 /* ---- result --------------------------------------------------------------- */
 

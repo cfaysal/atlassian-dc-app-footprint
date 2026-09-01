@@ -13,6 +13,13 @@ A generated page carries a marker, and the export refuses to touch a page that d
 carry it, so it cannot overwrite a page it did not create. If the existing page cannot be
 read or parsed, nothing is written at all.
 
+The Confluence endpoint reads the list of spaces for that export directly from the
+database, as a single `SELECT` on the `SPACES` table, obtained through ScriptRunner's
+read-only executor. It is the only statement either script runs, no value is ever
+concatenated into it, and the read-only executor makes that claim enforceable rather than a
+matter of reading the source. The Java service that used to answer this question is a Spring
+AOP proxy that cannot be resolved from inside a ScriptRunner REST endpoint.
+
 The two endpoints reach Confluence differently, and the difference matters for you:
 
 * The **Confluence endpoint** writes through the local Confluence API. No network

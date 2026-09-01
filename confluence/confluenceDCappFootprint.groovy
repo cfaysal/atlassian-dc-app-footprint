@@ -59,6 +59,24 @@
  * =============================================================================
  */
 
+/* The api.service.content layer, kept and no longer resolved.
+ *
+ * The space picker of the export used to read its list through
+ * com.atlassian.confluence.api.service.content.SpaceService. That concrete type is
+ * a Spring AOP proxy, and resolving it inside a ScriptRunner REST endpoint throws
+ *   IllegalArgumentException: org.springframework.aop.SpringProxy referenced from
+ *   a method is not visible from class loader ... ChainingClassLoader
+ * Measured on a customer instance under OP-1063, and measured for the same type on
+ * two Confluence 10.2.14 instances under OP-1005 in the sibling space-configuration
+ * script. The picker therefore refused on every instance it was opened on. It now
+ * reads the SPACES table; see SpaceCatalog and Db below.
+ *
+ * The imports stay because the finding is about ONE concrete type and its proxy, not
+ * about the api.service layer as a whole. That distinction is measured, not assumed:
+ * the same sibling script imports and runs api.service.settings.ExtendedPluginSettings
+ * and ExtendedPluginSettingsFactory on the same instance line, so api.service.settings
+ * is untouched by this. Anyone reinstating an API-layer read here should find what was
+ * measured about this one type rather than rediscover it the hard way. */
 import com.atlassian.confluence.api.model.Expansion
 import com.atlassian.confluence.api.model.content.Space as ApiSpace
 import com.atlassian.confluence.api.model.content.SpaceStatus as ApiSpaceStatus
@@ -111,9 +129,18 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
 
+import org.codehaus.groovy.runtime.InvokerHelper
+
 import jakarta.ws.rs.core.MultivaluedMap
 import jakarta.ws.rs.core.Response
 
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
+import java.sql.Connection
+import java.sql.DatabaseMetaData
+import java.sql.PreparedStatement
+import java.sql.ResultSet
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.function.Consumer
@@ -134,7 +161,7 @@ class Cfp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "4.7"
+    static final String VERSION = "4.8"
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
@@ -1335,6 +1362,227 @@ class Analyzer {
 
 
 /* =============================================================================
+ * The database read path
+ *
+ * SQL is the route of last resort in this script and it is taken for exactly one
+ * thing: the space list the export form offers. The Java API that used to answer
+ * it, com.atlassian.confluence.api.service.content.SpaceService, is a Spring AOP
+ * proxy whose resolution throws inside a ScriptRunner REST endpoint - the measured
+ * message stands at the import block on top of this file.
+ *
+ * The access shape is the one the sibling space-configuration script measured on a
+ * live instance: TransactionalExecutorFactory, then createReadOnly(), then
+ * execute(callback). NO SAL rdbms type is named statically. The callback interface
+ * is loaded by name and implemented with a JDK proxy, so this file still compiles
+ * on an instance where the package is absent instead of failing to start.
+ *
+ * createReadOnly() is not decoration. It is the one thing that makes the read-only
+ * claim of this script enforceable rather than a matter of reviewing every
+ * statement by eye. The single statement is a SELECT and its single value travels
+ * as a bound parameter; nothing is concatenated into SQL anywhere below.
+ * ========================================================================== */
+
+class Db {
+
+    static final String EXECUTOR_FACTORY = "com.atlassian.sal.api.rdbms.TransactionalExecutorFactory"
+    static final String CONNECTION_CALLBACK = "com.atlassian.sal.api.rdbms.ConnectionCallback"
+
+    /* Exception class plus message, clamped. PageExport.errorDetail says the same
+     * thing and is deliberately not reused: that class sits inside the block the
+     * offline suite compiles and this one cannot, because it names JDBC types. */
+    static String why(Throwable error) {
+        if (error == null) {
+            return null
+        }
+        String message = error.getMessage()
+        String detail = error.getClass().getSimpleName()
+        if (message != null && !message.trim().isEmpty()) {
+            detail = detail + " - " + message.trim()
+        }
+        return detail.length() > 300 ? detail.substring(0, 300) + " [clamped]" : detail
+    }
+
+    /* The factory, or null with the reason in the returned map. Acquisition and
+     * resolution are different questions: a type that resolves and yields no
+     * component has to read differently from a type that could not be loaded, and
+     * neither of them may read like a database without spaces. */
+    static Map<String, Object> factory() {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("factory", null)
+        out.put("failure", null)
+        try {
+            Object component = ComponentLocator.getComponent(Class.forName(EXECUTOR_FACTORY))
+            if (component == null) {
+                out.put("failure", "The SAL read-only executor factory resolved but no component was " +
+                    "returned, so no statement was attempted.")
+            } else {
+                out.put("factory", component)
+            }
+        } catch (Throwable error) {
+            out.put("failure", "The SAL read-only executor factory could not be obtained: " + why(error) +
+                ". No statement was attempted.")
+        }
+        return out
+    }
+
+    /* Runs the body against a read-only connection. The callback type is loaded by
+     * name and implemented with a JDK proxy for the reason stated above, and the
+     * factory is called through InvokerHelper rather than as a named method on an
+     * Object: a dynamic method name would show up as an error in the ScriptRunner
+     * editor, which is the one place an administrator reads this file before
+     * running it. Failures are thrown, never swallowed - the caller turns them into
+     * a refusal that names the reason. */
+    static Object withConnection(Object executorFactory, Closure body) {
+        Class callbackType = Class.forName(CONNECTION_CALLBACK)
+        Object executor = InvokerHelper.invokeMethod(executorFactory, "createReadOnly", new Object[0])
+        if (executor == null) {
+            throw new IllegalStateException("createReadOnly() returned no executor")
+        }
+        Object callback = Proxy.newProxyInstance(
+            callbackType.getClassLoader(), [callbackType] as Class[],
+            new InvocationHandler() {
+                Object invoke(Object proxy, Method method, Object[] arguments) {
+                    String name = method.getName()
+                    if (name == "execute") {
+                        return body.call(arguments[0])
+                    }
+                    if (name == "toString") {
+                        return "appFootprint-callback"
+                    }
+                    if (name == "hashCode") {
+                        return Integer.valueOf(System.identityHashCode(proxy))
+                    }
+                    if (name == "equals") {
+                        return Boolean.valueOf(proxy.is(arguments[0]))
+                    }
+                    return null
+                }
+            })
+        return InvokerHelper.invokeMethod(executor, "execute", [callback] as Object[])
+    }
+
+    /* The Confluence schema is not a public API, so a column this script names can
+     * disappear in an upgrade. It is read through the database catalogue BEFORE the
+     * statement runs rather than by running the statement and seeing what happens: a
+     * missing column has to produce a sentence naming it, not a picker that lists
+     * nothing - or, if the vanished column is the one restricted on, a picker that
+     * silently lists every space including the archived ones.
+     *
+     * Returns the missing columns, or a failure when the catalogue itself could not
+     * be read. Those two are different answers and are never merged. */
+    static Map<String, Object> shape(Connection connection, String table, List<String> required) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("table", table)
+        out.put("missing", new ArrayList<String>())
+        out.put("failure", null)
+        try {
+            Set<String> present = new LinkedHashSet<String>()
+            DatabaseMetaData meta = connection.getMetaData()
+            /* Identifier case is a property of the database, not of this file.
+             * PostgreSQL folds unquoted names to lower case and other engines fold
+             * to upper, so both spellings are asked for and the first that answers
+             * wins. */
+            for (String candidate : [table.toLowerCase(Locale.ROOT), table.toUpperCase(Locale.ROOT)]) {
+                ResultSet columns = meta.getColumns(null, null, candidate, null)
+                try {
+                    while (columns.next()) {
+                        String name = columns.getString("COLUMN_NAME")
+                        if (name != null) {
+                            present.add(name.toLowerCase(Locale.ROOT))
+                        }
+                    }
+                } finally {
+                    columns.close()
+                }
+                if (!present.isEmpty()) {
+                    break
+                }
+            }
+            List<String> missing = (List<String>) out.get("missing")
+            for (String column : required) {
+                if (!present.contains(column.toLowerCase(Locale.ROOT))) {
+                    missing.add(column)
+                }
+            }
+        } catch (Throwable error) {
+            out.put("failure", "The database catalogue could not be read: " + why(error))
+        }
+        return out
+    }
+
+    /* A read that failed and a read that found nothing return different objects. A
+     * fail-soft accessor answering the same way for both is exactly how a failed
+     * read turns into a proven absence, so the failure travels WITH the result. */
+    static Map<String, Object> query(Connection connection, String sql, List<String> arguments,
+                                     List<String> columns, int cap) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        List<Map<String, String>> rows = new ArrayList<Map<String, String>>()
+        out.put("rows", rows)
+        out.put("truncated", Boolean.FALSE)
+        out.put("failure", null)
+        out.put("cap", Integer.valueOf(cap))
+        PreparedStatement statement = null
+        try {
+            statement = connection.prepareStatement(sql)
+            for (int index = 0; index < arguments.size(); index++) {
+                statement.setString(index + 1, arguments.get(index))
+            }
+            ResultSet results = statement.executeQuery()
+            try {
+                while (results.next()) {
+                    if (rows.size() >= cap) {
+                        /* Reached only when a row exists BEYOND the cap, so a result
+                         * that ends exactly at the cap is not announced as cut. A
+                         * report that cannot tell those apart announces a truncation
+                         * that did not happen, or hides one that did. */
+                        out.put("truncated", Boolean.TRUE)
+                        break
+                    }
+                    Map<String, String> row = new LinkedHashMap<String, String>()
+                    for (String column : columns) {
+                        row.put(column, results.getString(column))
+                    }
+                    rows.add(row)
+                }
+            } finally {
+                results.close()
+            }
+        } catch (Throwable error) {
+            out.put("failure", "The statement failed: " + why(error))
+        } finally {
+            if (statement != null) {
+                try {
+                    statement.close()
+                } catch (Throwable ignored) {
+                    /* A close that fails changes nothing about the rows already read
+                     * and must not turn a successful read into a failed one. */
+                }
+            }
+        }
+        return out
+    }
+
+    /* The picker read in one place: verify the shape, run the statement, and let
+     * SpaceCatalog decide between a list and a refusal. The statement is not run at
+     * all when a column it names is missing - running it anyway would either fail
+     * with a database error saying less than the catalogue already said or, if the
+     * missing column is the one restricted on, hand back every space there is. */
+    static Map<String, Object> spaceRows(Connection connection) {
+        if (connection == null) {
+            return SpaceCatalog.spaceList(null, null)
+        }
+        Map<String, Object> shape = shape(connection, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
+        if (SpaceCatalog.shapeProblem(shape) != null) {
+            return SpaceCatalog.spaceList(shape, null)
+        }
+        Map<String, Object> found = query(connection, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT],
+            SpaceCatalog.READ, SpaceCatalog.CAP)
+        return SpaceCatalog.spaceList(shape, found)
+    }
+}
+
+
+/* =============================================================================
  * Confluence page export - decision read
  * ========================================================================== */
 
@@ -2166,6 +2414,146 @@ class PageExport {
 
         outcome.storage = out.toString()
         return outcome
+    }
+}
+
+
+/* =============================================================================
+ * Confluence page export - the space picker
+ * ========================================================================== */
+
+/* The list of spaces the export form offers. It is read from the SPACES table and
+ * not from a Confluence service, and the reason is measured rather than stylistic:
+ * the route this replaces resolved
+ * com.atlassian.confluence.api.service.content.SpaceService, that concrete type is
+ * a Spring AOP proxy, and its resolution throws inside a ScriptRunner endpoint. The
+ * import block at the top of this file carries the verbatim message and where it
+ * was measured. The picker refused on every instance it was opened on - the
+ * fail-loud path doing its job over a read path that cannot work.
+ *
+ * This class carries the DECISIONS only. Everything touching JDBC sits in Db above,
+ * so every branch below - a verified list, a named missing column, a failed read
+ * that stays a failed read - is exercised by the offline suite with plain maps and
+ * without a database. */
+class SpaceCatalog {
+
+    static final String TABLE = "spaces"
+
+    /* The columns the shape check verifies before a single row is read. spacestatus
+     * is on the list because the statement RESTRICTS on it: a column that vanished
+     * in an upgrade has to surface as a failed read naming the column, never as a
+     * list of every space including the archived ones and never as a silent full
+     * list. */
+    static final List<String> COLUMNS = ["spacekey", "spacename", "spacestatus"]
+
+    /* The stored spelling of SpaceStatus.CURRENT. It is BOUND, never pasted: no
+     * value is interpolated into SQL anywhere in this script and a constant of this
+     * script's own making is no exception to that rule. */
+    static final String STATUS_CURRENT = "CURRENT"
+
+    /* Ordering happens in SQL rather than in Groovy afterwards, so that the cap below
+     * cuts by the same order the browser shows. A cap announcing an ordering the
+     * statement did not use is worse than one announcing none.
+     *
+     * No string literal goes into COALESCE, NULLIF, DECODE or a concatenation against
+     * a text column. Confluence stores text as NVARCHAR2 on Oracle, a literal '' is
+     * CHAR, and those functions require one character set across their arguments:
+     * measured on a customer instance as ORA-12704 in the sibling script, on a
+     * statement that had been reviewed as portable and only ever run on PostgreSQL. A
+     * nameless space therefore sorts under NULL, which Oracle and PostgreSQL both
+     * place last on an ascending sort, and is still LABELLED with its key below. */
+    static final String SQL =
+        "SELECT s.spacekey, s.spacename FROM spaces s WHERE s.spacestatus = ? " +
+        "ORDER BY LOWER(s.spacename), LOWER(s.spacekey)"
+
+    /* The columns actually taken off each row. Shorter than COLUMNS on purpose: the
+     * status is verified and restricted on, never carried. */
+    static final List<String> READ = ["spacekey", "spacename"]
+
+    /* The ordering a cap announcement has to name. */
+    static final String ORDER = "space name, then space key"
+
+    /* A safety limit, not a product decision. It sits far above any instance this
+     * report is meant for, and if it is ever reached the browser says so and says
+     * which ordering the rows were taken by. */
+    static final int CAP = 20000
+
+    /* The sentence that keeps a failed read from being read as a measurement. Every
+     * refusal of this stage ends in it, in the endpoint as well as here. */
+    static final String NOT_EMPTY = "That is a failed read, not an instance without spaces."
+
+    /* The shape check turned into the one sentence the picker needs, or null when the
+     * table is as this script expects it. A catalogue that could not be read and a
+     * column that is not there are different answers and are never merged. */
+    static String shapeProblem(Map<String, Object> shape) {
+        if (shape == null) {
+            return "The columns this stage reads could not be verified, so nothing was read."
+        }
+        String failure = PageExport.str(shape, "failure", null)
+        if (failure != null) {
+            return failure + " The columns this stage reads could not be verified, so nothing was read."
+        }
+        Object raw = shape.get("missing")
+        List<String> missing = raw instanceof List ? (List<String>) raw : null
+        if (missing == null || missing.isEmpty()) {
+            return null
+        }
+        return "The table " + PageExport.str(shape, "table", TABLE) + " does not carry " +
+            (missing.size() == 1 ? "the column " : "the columns ") + missing.join(", ") +
+            " on this instance. The Confluence schema is not a public API and an upgrade can " +
+            "change it. Nothing was read rather than reporting an empty result."
+    }
+
+    /* The one place this stage decides between a list and a refusal.
+     *
+     * Both arguments are answers about the same read: what the catalogue said about
+     * the table, and what the statement returned. A missing shape check or a missing
+     * statement result is a failed read and never an empty list - and never a list
+     * either, because a list built without the verified restriction would quietly
+     * include the archived spaces this report keeps separate everywhere else. */
+    static Map<String, Object> spaceList(Map<String, Object> shape, Map<String, Object> found) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        List<Map<String, Object>> spaces = new ArrayList<Map<String, Object>>()
+        result.put("ok", Boolean.FALSE)
+        result.put("error", null)
+        result.put("spaces", spaces)
+        result.put("truncated", Boolean.FALSE)
+        result.put("cap", Integer.valueOf(CAP))
+        result.put("order", ORDER)
+
+        String problem = shapeProblem(shape)
+        if (problem != null) {
+            result.put("error", "The space list could not be read. " + problem + " " + NOT_EMPTY)
+            return result
+        }
+        if (found == null) {
+            result.put("error", "The space list could not be read: the statement returned no result " +
+                "at all, so no space was seen. " + NOT_EMPTY)
+            return result
+        }
+        String failure = PageExport.str(found, "failure", null)
+        if (failure != null) {
+            result.put("error", "The space list could not be read (" + failure + "). " + NOT_EMPTY)
+            return result
+        }
+
+        Object rawRows = found.get("rows")
+        for (Map<String, String> row : (rawRows instanceof List ? (List<Map<String, String>>) rawRows
+                                                                : new ArrayList<Map<String, String>>())) {
+            String key = PageExport.str((Map<String, Object>) row, "spacekey", null)
+            if (key == null) {
+                /* A row with no key names nothing that can be picked. It costs itself
+                 * and never the list. */
+                continue
+            }
+            Map<String, Object> space = new LinkedHashMap<String, Object>()
+            space.put("key", key)
+            space.put("name", PageExport.str((Map<String, Object>) row, "spacename", key))
+            spaces.add(space)
+        }
+        result.put("truncated", found.get("truncated") == Boolean.TRUE ? Boolean.TRUE : Boolean.FALSE)
+        result.put("ok", Boolean.TRUE)
+        return result
     }
 }
 
@@ -3718,8 +4106,18 @@ function openExport(){
       return;
     }
     exportSpaceList=body.spaces||[];
-    say('muted',String(exportSpaceList.length)+' current space(s). Type at least ${PageExport.MIN_SEARCH_CHARS}'+
-      ' characters to search by name or key.');
+    /* A cap that cut the list is announced with the ordering it cut by. A list
+       silently shortened to its first N entries reads exactly like a complete
+       one, and the space that is missing is the one nobody thinks to look for. */
+    var spaceNote=String(exportSpaceList.length)+' current space(s). Type at least ${PageExport.MIN_SEARCH_CHARS}'+
+      ' characters to search by name or key.';
+    if(body.truncated===true){
+      spaceNote=spaceNote+' This list was cut at '+String(body.cap)+' spaces, taken by '+
+        String(body.order)+'. A space past the cut can still be exported by naming its key.';
+      say('warn',spaceNote);
+      return;
+    }
+    say('muted',spaceNote);
   }).catch(function(error){
     el('exportSettings').classList.add('hidden');
     el('exportOpen').disabled=false;
@@ -3971,65 +4369,55 @@ appFootprint(
     }
 
     if (requestedAction == "spaces") {
-        ApiSpaceService apiSpaceService = ComponentLocator.getComponent(ApiSpaceService.class)
-        if (apiSpaceService == null) {
-            return refuse(500, "spaces", "The Confluence SpaceService could not be resolved, so the space list could not be read. " +
-                "That is a failed read, not an instance without spaces.")
+        /* No Confluence service is resolved in this stage at all. The one it used to
+         * resolve is a Spring AOP proxy the ScriptRunner chaining classloader cannot
+         * see, which is what made this stage refuse on every instance it was opened
+         * on. The list comes off the SPACES table now, through the SAL read-only
+         * executor; SpaceCatalog above holds the statement and every decision. */
+        Map<String, Object> executor = Db.factory()
+        Object executorFactory = executor.get("factory")
+        if (executorFactory == null) {
+            /* Db.factory never hands back nothing without naming a reason, so the
+             * reason is printed rather than replaced by a marker. */
+            return refuse(500, "spaces", String.valueOf(executor.get("failure")) + " " +
+                SpaceCatalog.NOT_EMPTY)
         }
 
-        List<Map<String, Object>> spaceRows = new ArrayList<Map<String, Object>>()
+        Map<String, Object> listed = null
         try {
-            /* Same inventory the report itself measures with: current spaces only,
-             * names taken from the API Space objects. Every page is read; a response
-             * that claims more results without advancing is a failed inventory. */
-            int spaceStart = 0
-            final int spacePageSize = 100
-            SpaceFinder currentSpaceFinder = apiSpaceService.find(new Expansion[0])
-            currentSpaceFinder = currentSpaceFinder.withStatus(ApiSpaceStatus.CURRENT)
-            while (true) {
-                PageResponse<ApiSpace> spacePage = currentSpaceFinder.fetchMany(
-                    new SimplePageRequest(spaceStart, spacePageSize))
-                for (ApiSpace space : spacePage.getResults()) {
-                    String key = space == null ? null : space.getKey()
-                    if (key == null) {
-                        continue
-                    }
-                    String name = space.getName()
-                    Map<String, Object> row = new LinkedHashMap<String, Object>()
-                    row.put("key", key)
-                    row.put("name", name == null || name.trim().isEmpty() ? key : name)
-                    spaceRows.add(row)
-                }
-                if (!spacePage.hasMore()) {
-                    break
-                }
-                int returned = spacePage.size()
-                if (returned <= 0) {
-                    throw new IllegalStateException("Space pagination did not advance")
-                }
-                spaceStart += returned
+            listed = (Map<String, Object>) Db.withConnection(executorFactory) { Connection connection ->
+                return Db.spaceRows(connection)
             }
-        } catch (Exception error) {
-            return refuse(500, "spaces", "The space list could not be read (" + PageExport.errorDetail(error) +
-                "). That is a failed read, not an instance without spaces.")
+        } catch (Throwable error) {
+            return refuse(500, "spaces", "The space list could not be read (" + Db.why(error) + "). " +
+                SpaceCatalog.NOT_EMPTY)
+        }
+        if (listed == null) {
+            /* The executor returned without handing back a result. That is not an
+             * empty instance either, and saying so is the difference between an
+             * answer and a guess. */
+            return refuse(500, "spaces", "The read-only executor returned no result at all, so no " +
+                "space was read. " + SpaceCatalog.NOT_EMPTY)
+        }
+        if (listed.get("ok") != Boolean.TRUE) {
+            return refuse(500, "spaces", String.valueOf(listed.get("error")))
         }
 
+        List<Map<String, Object>> spaceRows = (List<Map<String, Object>>) listed.get("spaces")
         if (spaceRows.isEmpty()) {
             return refuse(500, "spaces", "The space inventory answered but named no current space, so no space can be picked.")
-        }
-
-        spaceRows.sort { Map<String, Object> a, Map<String, Object> b ->
-            int byName = PageExport.str(a, "name", "").compareToIgnoreCase(PageExport.str(b, "name", ""))
-            if (byName != 0) {
-                return byName
-            }
-            return PageExport.str(a, "key", "").compareToIgnoreCase(PageExport.str(b, "key", ""))
         }
 
         Map<String, Object> spacePayload = new LinkedHashMap<String, Object>()
         spacePayload.put("ok", Boolean.TRUE)
         spacePayload.put("action", "spaces")
         spacePayload.put("spaces", spaceRows)
+        /* The cap travels WITH the rows, together with the ordering it would cut by,
+         * so the browser can announce a cut without knowing either. A cap nobody is
+         * told about is how a 5038-space instance silently becomes 2000 spaces. */
+        spacePayload.put("truncated", listed.get("truncated"))
+        spacePayload.put("cap", listed.get("cap"))
+        spacePayload.put("order", listed.get("order"))
         return answer(spacePayload)
     }
 

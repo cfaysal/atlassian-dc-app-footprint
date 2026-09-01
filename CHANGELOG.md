@@ -145,6 +145,26 @@ published in this repository.
 
 ### Fixed
 
+- **Confluence: the space list of the export could not be read on any instance** (`4.8`).
+  Opening "Export to Confluence" answered with `IllegalArgumentException:
+  org.springframework.aop.SpringProxy referenced from a method is not visible from class
+  loader ... ChainingClassLoader`. The stage resolved
+  `com.atlassian.confluence.api.service.content.SpaceService`, and that concrete type is a
+  Spring AOP proxy the ScriptRunner chaining classloader cannot see. The fail-loud path was
+  working correctly: it reported a failed read rather than an instance without spaces. The
+  read path was the broken part. The picker now reads the `SPACES` table through the SAL
+  read-only executor, with `CURRENT` as a bound parameter and never as pasted text, and the
+  columns `spacekey`, `spacename` and `spacestatus` verified through the database catalogue
+  before the statement runs. A column that moved in an upgrade is named in the refusal; it
+  can no longer produce a picker listing every space including the archived ones. The same
+  fix was measured on two Confluence 10.2.14 instances in the sibling space-configuration
+  script. The `api.service.content` imports are kept, unused, with the measurement written
+  next to them: the finding is about that one proxied type, and `api.service.settings` is
+  measured working on the same instance line.
+- **Confluence: a cut space list is now announced.** The list travels with the cap it was
+  read under and the ordering the cap cut by, and the browser says so when it was cut. A
+  silently shortened list reads exactly like a complete one.
+
 - **Parent page search found nothing in personal spaces.** The Jira endpoint passed the
   space key through the same sanitiser as the free-text search term, which strips the
   tilde, so `~jsmith` became a key that does not exist. Confluence answered with zero
