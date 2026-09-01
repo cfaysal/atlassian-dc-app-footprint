@@ -130,34 +130,18 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
 
+import org.codehaus.groovy.runtime.InvokerHelper
+
 import jakarta.ws.rs.core.MultivaluedMap
 import jakarta.ws.rs.core.Response
 
-/* No import for java.sql, java.lang.reflect or the Groovy invoker, and that is a
- * decision rather than an omission.
- *
- * Version 4.8 named java.sql.Connection, DatabaseMetaData, PreparedStatement and
- * ResultSet, java.lang.reflect.InvocationHandler, Method and Proxy, and
- * org.codehaus.groovy.runtime.InvokerHelper for the space picker. On the customer
- * instance the WHOLE endpoint answered 500 afterwards - the plain GET as well,
- * which never reaches a line of database code. A fault that hits a request unable
- * to execute the new code is a fault of LOADING the script, and a script that does
- * not load fails every call it will ever receive. The server log holding the reason
- * is not reachable to the administrators of that instance, so this class of fault
- * is REMOVED rather than diagnosed: a type this file does not name cannot fail to
- * resolve for this file.
- *
- * Db below declares Object wherever a Connection, DatabaseMetaData,
- * PreparedStatement or ResultSet would have stood, and reaches every one of them
- * through dynamic dispatch. The SAL callback is built by coercing a Groovy closure
- * to an interface loaded by name, which puts java.lang.reflect.Proxy inside the
- * Groovy runtime, where it is already loaded, instead of inside this file.
- *
- * UNVERIFIED, and it stays that way: that those imports were the cause. There is no
- * stack trace, only the observation that a GET which touched none of the new code
- * began to throw. What IS measured is the absence of the dependency: the Db class
- * compiles on its own with no import at all, and its constant pool names none of
- * these types. The same measurement fails outright on the 4.8 file. */
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
+import java.sql.Connection
+import java.sql.DatabaseMetaData
+import java.sql.PreparedStatement
+import java.sql.ResultSet
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.function.Consumer
@@ -178,7 +162,7 @@ class Cfp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "4.9"
+    static final String VERSION = "4.10"
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
@@ -1379,6 +1363,309 @@ class Analyzer {
 
 
 /* =============================================================================
+ * The database read path
+ *
+ * SQL is the route of last resort in this script and it is taken for exactly one
+ * thing: the space list the export form offers. The Java API that used to answer
+ * it, com.atlassian.confluence.api.service.content.SpaceService, is a Spring AOP
+ * proxy whose resolution throws inside a ScriptRunner REST endpoint - the measured
+ * message stands at the import block on top of this file.
+ *
+ * The access shape is the one the sibling space-configuration script measured on a
+ * live instance: TransactionalExecutorFactory, then createReadOnly(), then
+ * execute(callback). NO SAL rdbms type is named statically. The callback interface
+ * is loaded by name and implemented with a JDK proxy, so this file still compiles
+ * on an instance where the package is absent instead of failing to start.
+ *
+ * createReadOnly() is not decoration. It is the one thing that makes the read-only
+ * claim of this script enforceable rather than a matter of reviewing every
+ * statement by eye. The single statement is a SELECT and its single value travels
+ * as a bound parameter; nothing is concatenated into SQL anywhere below.
+ * ========================================================================== */
+
+class Db {
+
+    static final String EXECUTOR_FACTORY = "com.atlassian.sal.api.rdbms.TransactionalExecutorFactory"
+    static final String CONNECTION_CALLBACK = "com.atlassian.sal.api.rdbms.ConnectionCallback"
+
+    /* Exception class plus message, clamped. PageExport.errorDetail says the same
+     * thing and is deliberately not reused: that class sits inside the block the
+     * offline suite compiles and this one cannot, because it names JDBC types. */
+    static String why(Throwable error) {
+        if (error == null) {
+            return null
+        }
+        String message = error.getMessage()
+        String detail = error.getClass().getSimpleName()
+        if (message != null && !message.trim().isEmpty()) {
+            detail = detail + " - " + message.trim()
+        }
+        return detail.length() > 300 ? detail.substring(0, 300) + " [clamped]" : detail
+    }
+
+    /* The factory, or null with the reason in the returned map. Acquisition and
+     * resolution are different questions: a type that resolves and yields no
+     * component has to read differently from a type that could not be loaded, and
+     * neither of them may read like a database without spaces. */
+    static Map<String, Object> factory() {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("factory", null)
+        out.put("failure", null)
+        try {
+            Object component = ComponentLocator.getComponent(Class.forName(EXECUTOR_FACTORY))
+            if (component == null) {
+                out.put("failure", "The SAL read-only executor factory resolved but no component was " +
+                    "returned, so no statement was attempted.")
+            } else {
+                out.put("factory", component)
+            }
+        } catch (Throwable error) {
+            out.put("failure", "The SAL read-only executor factory could not be obtained: " + why(error) +
+                ". No statement was attempted.")
+        }
+        return out
+    }
+
+    /* The body handed over as an implementation of the SAL callback interface, which
+     * is known only as a runtime Class and is therefore implemented with a JDK proxy.
+     * Extracted so the self-check below can build one without running a statement:
+     * whether a callback can be built at all is one of the four things it reports. */
+    static Object callback(Class callbackType, Closure body) {
+        return Proxy.newProxyInstance(
+            callbackType.getClassLoader(), [callbackType] as Class[],
+            new InvocationHandler() {
+                Object invoke(Object proxy, Method method, Object[] arguments) {
+                    String name = method.getName()
+                    if (name == "execute") {
+                        return body.call(arguments[0])
+                    }
+                    if (name == "toString") {
+                        return "appFootprint-callback"
+                    }
+                    if (name == "hashCode") {
+                        return Integer.valueOf(System.identityHashCode(proxy))
+                    }
+                    if (name == "equals") {
+                        return Boolean.valueOf(proxy.is(arguments[0]))
+                    }
+                    return null
+                }
+            })
+    }
+
+    /* Runs the body against a read-only connection. The callback type is loaded by
+     * name and implemented with a JDK proxy for the reason stated above, and the
+     * factory is called through InvokerHelper rather than as a named method on an
+     * Object: a dynamic method name would show up as an error in the ScriptRunner
+     * editor, which is the one place an administrator reads this file before
+     * running it. Failures are thrown, never swallowed - the caller turns them into
+     * a refusal that names the reason. */
+    static Object withConnection(Object executorFactory, Closure body) {
+        Class callbackType = Class.forName(CONNECTION_CALLBACK)
+        Object executor = InvokerHelper.invokeMethod(executorFactory, "createReadOnly", new Object[0])
+        if (executor == null) {
+            throw new IllegalStateException("createReadOnly() returned no executor")
+        }
+        return InvokerHelper.invokeMethod(executor, "execute",
+            [callback(callbackType, body)] as Object[])
+    }
+
+    /* The Confluence schema is not a public API, so a column this script names can
+     * disappear in an upgrade. It is read through the database catalogue BEFORE the
+     * statement runs rather than by running the statement and seeing what happens: a
+     * missing column has to produce a sentence naming it, not a picker that lists
+     * nothing - or, if the vanished column is the one restricted on, a picker that
+     * silently lists every space including the archived ones.
+     *
+     * Returns the missing columns, or a failure when the catalogue itself could not
+     * be read. Those two are different answers and are never merged. */
+    static Map<String, Object> shape(Connection connection, String table, List<String> required) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("table", table)
+        out.put("missing", new ArrayList<String>())
+        out.put("failure", null)
+        try {
+            Set<String> present = new LinkedHashSet<String>()
+            DatabaseMetaData meta = connection.getMetaData()
+            /* Identifier case is a property of the database, not of this file.
+             * PostgreSQL folds unquoted names to lower case and other engines fold
+             * to upper, so both spellings are asked for and the first that answers
+             * wins. */
+            for (String candidate : [table.toLowerCase(Locale.ROOT), table.toUpperCase(Locale.ROOT)]) {
+                ResultSet columns = meta.getColumns(null, null, candidate, null)
+                try {
+                    while (columns.next()) {
+                        String name = columns.getString("COLUMN_NAME")
+                        if (name != null) {
+                            present.add(name.toLowerCase(Locale.ROOT))
+                        }
+                    }
+                } finally {
+                    columns.close()
+                }
+                if (!present.isEmpty()) {
+                    break
+                }
+            }
+            List<String> missing = (List<String>) out.get("missing")
+            for (String column : required) {
+                if (!present.contains(column.toLowerCase(Locale.ROOT))) {
+                    missing.add(column)
+                }
+            }
+        } catch (Throwable error) {
+            out.put("failure", "The database catalogue could not be read: " + why(error))
+        }
+        return out
+    }
+
+    /* A read that failed and a read that found nothing return different objects. A
+     * fail-soft accessor answering the same way for both is exactly how a failed
+     * read turns into a proven absence, so the failure travels WITH the result. */
+    static Map<String, Object> query(Connection connection, String sql, List<String> arguments,
+                                     List<String> columns, int cap) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        List<Map<String, String>> rows = new ArrayList<Map<String, String>>()
+        out.put("rows", rows)
+        out.put("truncated", Boolean.FALSE)
+        out.put("failure", null)
+        out.put("cap", Integer.valueOf(cap))
+        PreparedStatement statement = null
+        try {
+            statement = connection.prepareStatement(sql)
+            for (int index = 0; index < arguments.size(); index++) {
+                statement.setString(index + 1, arguments.get(index))
+            }
+            ResultSet results = statement.executeQuery()
+            try {
+                while (results.next()) {
+                    if (rows.size() >= cap) {
+                        /* Reached only when a row exists BEYOND the cap, so a result
+                         * that ends exactly at the cap is not announced as cut. A
+                         * report that cannot tell those apart announces a truncation
+                         * that did not happen, or hides one that did. */
+                        out.put("truncated", Boolean.TRUE)
+                        break
+                    }
+                    Map<String, String> row = new LinkedHashMap<String, String>()
+                    for (String column : columns) {
+                        row.put(column, results.getString(column))
+                    }
+                    rows.add(row)
+                }
+            } finally {
+                results.close()
+            }
+        } catch (Throwable error) {
+            out.put("failure", "The statement failed: " + why(error))
+        } finally {
+            if (statement != null) {
+                try {
+                    statement.close()
+                } catch (Throwable ignored) {
+                    /* A close that fails changes nothing about the rows already read
+                     * and must not turn a successful read into a failed one. */
+                }
+            }
+        }
+        return out
+    }
+
+    /* The picker read in one place: verify the shape, run the statement, and let
+     * SpaceCatalog decide between a list and a refusal. The statement is not run at
+     * all when a column it names is missing - running it anyway would either fail
+     * with a database error saying less than the catalogue already said or, if the
+     * missing column is the one restricted on, hand back every space there is. */
+    static Map<String, Object> spaceRows(Connection connection) {
+        if (connection == null) {
+            return SpaceCatalog.spaceList(null, null)
+        }
+        Map<String, Object> shape = shape(connection, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
+        if (SpaceCatalog.shapeProblem(shape) != null) {
+            return SpaceCatalog.spaceList(shape, null)
+        }
+        Map<String, Object> found = query(connection, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT],
+            SpaceCatalog.READ, SpaceCatalog.CAP)
+        return SpaceCatalog.spaceList(shape, found)
+    }
+
+    /* The read path asked whether it resolves, one building block at a time.
+     *
+     * This method reports faults, so it may not raise one: every step is guarded on
+     * its own, and a step that could not be attempted says so instead of counting
+     * as a pass. The wording and every decision about it live in SelfCheck, which
+     * names nothing that needs an instance and is therefore under test offline.
+     *
+     * deep=false is what a standard report pays for: one component lookup and one
+     * class load. deep=true additionally creates the executor and reads the
+     * catalogue, which opens a database connection, and is reached from diag=true
+     * alone. */
+    static List<Map<String, Object>> probe(boolean deep) {
+        List<Map<String, Object>> steps = new ArrayList<Map<String, Object>>()
+
+        Map<String, Object> resolved = factory()
+        Object executorFactory = resolved.get("factory")
+        steps.add(SelfCheck.step(SelfCheck.STEP_FACTORY, executorFactory != null,
+            executorFactory == null ? String.valueOf(resolved.get("failure")) : null))
+
+        Class callbackType = null
+        String callbackFailure = null
+        try {
+            Class loaded = Class.forName(CONNECTION_CALLBACK)
+            /* Loading the interface is half the question. Whether an implementation
+             * can be built for it is the other half, and it is the half the read
+             * actually depends on. */
+            Closure nothing = { Object connection -> return null }
+            if (callback(loaded, nothing) == null) {
+                callbackFailure = "The callback interface loaded but no implementation could be built for it."
+            } else {
+                callbackType = loaded
+            }
+        } catch (Throwable error) {
+            callbackFailure = "The connection callback interface could not be loaded: " + why(error)
+        }
+        steps.add(SelfCheck.step(SelfCheck.STEP_CALLBACK, callbackType != null, callbackFailure))
+
+        Object executor = null
+        if (!deep) {
+            steps.add(SelfCheck.onRequest(SelfCheck.STEP_EXECUTOR))
+        } else if (executorFactory == null) {
+            steps.add(SelfCheck.blocked(SelfCheck.STEP_EXECUTOR, SelfCheck.STEP_FACTORY))
+        } else {
+            try {
+                executor = InvokerHelper.invokeMethod(executorFactory, "createReadOnly", new Object[0])
+                steps.add(SelfCheck.step(SelfCheck.STEP_EXECUTOR, executor != null,
+                    "createReadOnly() returned no executor."))
+            } catch (Throwable error) {
+                steps.add(SelfCheck.step(SelfCheck.STEP_EXECUTOR, false,
+                    "The read-only executor could not be created: " + why(error)))
+            }
+        }
+
+        if (!deep) {
+            steps.add(SelfCheck.onRequest(SelfCheck.STEP_CATALOGUE))
+        } else if (executor == null || callbackType == null) {
+            steps.add(SelfCheck.blocked(SelfCheck.STEP_CATALOGUE,
+                executor == null ? SelfCheck.STEP_EXECUTOR : SelfCheck.STEP_CALLBACK))
+        } else {
+            try {
+                Closure read = { Connection connection ->
+                    return shape(connection, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
+                }
+                Object answer = InvokerHelper.invokeMethod(executor, "execute",
+                    [callback(callbackType, read)] as Object[])
+                steps.add(SelfCheck.catalogue(answer instanceof Map ? (Map<String, Object>) answer : null))
+            } catch (Throwable error) {
+                steps.add(SelfCheck.step(SelfCheck.STEP_CATALOGUE, false,
+                    "The database catalogue could not be read: " + why(error)))
+            }
+        }
+        return steps
+    }
+}
+
+
+/* =============================================================================
  * Confluence page export - decision read
  * ========================================================================== */
 
@@ -2227,7 +2514,7 @@ class PageExport {
  * was measured. The picker refused on every instance it was opened on - the
  * fail-loud path doing its job over a read path that cannot work.
  *
- * This class carries the DECISIONS only. Everything touching JDBC sits in Db below,
+ * This class carries the DECISIONS only. Everything touching JDBC sits in Db above,
  * so every branch below - a verified list, a named missing column, a failed read
  * that stays a failed read - is exercised by the offline suite with plain maps and
  * without a database. */
@@ -2350,303 +2637,6 @@ class SpaceCatalog {
         result.put("truncated", found.get("truncated") == Boolean.TRUE ? Boolean.TRUE : Boolean.FALSE)
         result.put("ok", Boolean.TRUE)
         return result
-    }
-}
-
-
-/* =============================================================================
- * The database read path
- *
- * SQL is the route of last resort in this script and it is taken for exactly one
- * thing: the space list the export form offers. The Java API that used to answer
- * it, com.atlassian.confluence.api.service.content.SpaceService, is a Spring AOP
- * proxy whose resolution throws inside a ScriptRunner REST endpoint - the measured
- * message stands at the import block on top of this file.
- *
- * The access shape is the one the sibling space-configuration script measured on a
- * live instance: TransactionalExecutorFactory, then createReadOnly(), then
- * execute(callback).
- *
- * NOT ONE TYPE ON THIS PATH IS NAMED STATICALLY, and since 4.8 that is a rule with
- * a price tag rather than a preference. No SAL rdbms type, no JDBC type, no
- * reflection type, no Groovy invoker: every signature and every local below says
- * Object, every call goes through call(), and the callback is a closure coerced to
- * an interface loaded by name. What this file does not name cannot fail to resolve
- * for this file, and a resolution failure at load time takes every request with it,
- * including the ones that would never have run the code.
- *
- * createReadOnly() is not decoration. It is the one thing that makes the read-only
- * claim of this script enforceable rather than a matter of reviewing every
- * statement by eye. The single statement is a SELECT and its single value travels
- * as a bound parameter; nothing is concatenated into SQL anywhere below.
- * ========================================================================== */
-
-class Db {
-
-    static final String EXECUTOR_FACTORY = "com.atlassian.sal.api.rdbms.TransactionalExecutorFactory"
-    static final String CONNECTION_CALLBACK = "com.atlassian.sal.api.rdbms.ConnectionCallback"
-
-    /* Exception class plus message, clamped. PageExport.errorDetail says the same
-     * thing and is deliberately not reused: that class sits inside the block the
-     * offline suite compiles and this one does not, and the helper that has to work
-     * while a type is missing is the last one to borrow from elsewhere. */
-    static String why(Throwable error) {
-        if (error == null) {
-            return null
-        }
-        String message = error.getMessage()
-        String detail = error.getClass().getSimpleName()
-        if (message != null && !message.trim().isEmpty()) {
-            detail = detail + " - " + message.trim()
-        }
-        return detail.length() > 300 ? detail.substring(0, 300) + " [clamped]" : detail
-    }
-
-    /* THE one place a method is called on a type this file does not name.
-     *
-     * invokeMethod is a method of Object as far as Groovy is concerned, so the
-     * receiver stays Object, the method name stays a string, and the ScriptRunner
-     * editor - the one place an administrator reads this file before running it -
-     * has nothing to underline. What is given up is compile-time checking of these
-     * calls, which is exactly what must not exist on this path. */
-    static Object call(Object target, String method, Object... arguments) {
-        return target.invokeMethod(method, arguments)
-    }
-
-    /* A closure handed over as an implementation of an interface that is known only
-     * as a runtime Class. Groovy builds the JDK proxy for this inside its own
-     * runtime, with the classloader of the interface - the same loader the
-     * hand-written proxy of 4.8 used, but without this file naming
-     * java.lang.reflect.Proxy and without an anonymous inner class in a script
-     * file. */
-    static Object callback(Class callbackType, Closure body) {
-        return body.asType(callbackType)
-    }
-
-    /* The factory, or null with the reason in the returned map. Acquisition and
-     * resolution are different questions: a type that resolves and yields no
-     * component has to read differently from a type that could not be loaded, and
-     * neither of them may read like a database without spaces. */
-    static Map<String, Object> factory() {
-        Map<String, Object> out = new LinkedHashMap<String, Object>()
-        out.put("factory", null)
-        out.put("failure", null)
-        try {
-            Object component = ComponentLocator.getComponent(Class.forName(EXECUTOR_FACTORY))
-            if (component == null) {
-                out.put("failure", "The SAL read-only executor factory resolved but no component was " +
-                    "returned, so no statement was attempted.")
-            } else {
-                out.put("factory", component)
-            }
-        } catch (Throwable error) {
-            out.put("failure", "The SAL read-only executor factory could not be obtained: " + why(error) +
-                ". No statement was attempted.")
-        }
-        return out
-    }
-
-    /* Runs the body against a read-only connection. Failures are thrown, never
-     * swallowed - the caller turns them into a refusal that names the reason. */
-    static Object withConnection(Object executorFactory, Closure body) {
-        Class callbackType = Class.forName(CONNECTION_CALLBACK)
-        Object executor = call(executorFactory, "createReadOnly")
-        if (executor == null) {
-            throw new IllegalStateException("createReadOnly() returned no executor")
-        }
-        return call(executor, "execute", callback(callbackType, body))
-    }
-
-    /* The Confluence schema is not a public API, so a column this script names can
-     * disappear in an upgrade. It is read through the database catalogue BEFORE the
-     * statement runs rather than by running the statement and seeing what happens: a
-     * missing column has to produce a sentence naming it, not a picker that lists
-     * nothing - or, if the vanished column is the one restricted on, a picker that
-     * silently lists every space including the archived ones.
-     *
-     * Returns the missing columns, or a failure when the catalogue itself could not
-     * be read. Those two are different answers and are never merged. */
-    static Map<String, Object> shape(Object connection, String table, List<String> required) {
-        Map<String, Object> out = new LinkedHashMap<String, Object>()
-        out.put("table", table)
-        out.put("missing", new ArrayList<String>())
-        out.put("failure", null)
-        try {
-            Set<String> present = new LinkedHashSet<String>()
-            Object meta = call(connection, "getMetaData")
-            /* Identifier case is a property of the database, not of this file.
-             * PostgreSQL folds unquoted names to lower case and other engines fold
-             * to upper, so both spellings are asked for and the first that answers
-             * wins. */
-            for (String candidate : [table.toLowerCase(Locale.ROOT), table.toUpperCase(Locale.ROOT)]) {
-                Object columns = call(meta, "getColumns", null, null, candidate, null)
-                try {
-                    while (Boolean.TRUE.equals(call(columns, "next"))) {
-                        String name = (String) call(columns, "getString", "COLUMN_NAME")
-                        if (name != null) {
-                            present.add(name.toLowerCase(Locale.ROOT))
-                        }
-                    }
-                } finally {
-                    call(columns, "close")
-                }
-                if (!present.isEmpty()) {
-                    break
-                }
-            }
-            List<String> missing = (List<String>) out.get("missing")
-            for (String column : required) {
-                if (!present.contains(column.toLowerCase(Locale.ROOT))) {
-                    missing.add(column)
-                }
-            }
-        } catch (Throwable error) {
-            out.put("failure", "The database catalogue could not be read: " + why(error))
-        }
-        return out
-    }
-
-    /* A read that failed and a read that found nothing return different objects. A
-     * fail-soft accessor answering the same way for both is exactly how a failed
-     * read turns into a proven absence, so the failure travels WITH the result. */
-    static Map<String, Object> query(Object connection, String sql, List<String> arguments,
-                                     List<String> columns, int cap) {
-        Map<String, Object> out = new LinkedHashMap<String, Object>()
-        List<Map<String, String>> rows = new ArrayList<Map<String, String>>()
-        out.put("rows", rows)
-        out.put("truncated", Boolean.FALSE)
-        out.put("failure", null)
-        out.put("cap", Integer.valueOf(cap))
-        Object statement = null
-        try {
-            statement = call(connection, "prepareStatement", sql)
-            for (int index = 0; index < arguments.size(); index++) {
-                call(statement, "setString", Integer.valueOf(index + 1), arguments.get(index))
-            }
-            Object results = call(statement, "executeQuery")
-            try {
-                while (Boolean.TRUE.equals(call(results, "next"))) {
-                    if (rows.size() >= cap) {
-                        /* Reached only when a row exists BEYOND the cap, so a result
-                         * that ends exactly at the cap is not announced as cut. A
-                         * report that cannot tell those apart announces a truncation
-                         * that did not happen, or hides one that did. */
-                        out.put("truncated", Boolean.TRUE)
-                        break
-                    }
-                    Map<String, String> row = new LinkedHashMap<String, String>()
-                    for (String column : columns) {
-                        row.put(column, (String) call(results, "getString", column))
-                    }
-                    rows.add(row)
-                }
-            } finally {
-                call(results, "close")
-            }
-        } catch (Throwable error) {
-            out.put("failure", "The statement failed: " + why(error))
-        } finally {
-            if (statement != null) {
-                try {
-                    call(statement, "close")
-                } catch (Throwable ignored) {
-                    /* A close that fails changes nothing about the rows already read
-                     * and must not turn a successful read into a failed one. */
-                }
-            }
-        }
-        return out
-    }
-
-    /* The picker read in one place: verify the shape, run the statement, and let
-     * SpaceCatalog decide between a list and a refusal. The statement is not run at
-     * all when a column it names is missing - running it anyway would either fail
-     * with a database error saying less than the catalogue already said or, if the
-     * missing column is the one restricted on, hand back every space there is. */
-    static Map<String, Object> spaceRows(Object connection) {
-        if (connection == null) {
-            return SpaceCatalog.spaceList(null, null)
-        }
-        Map<String, Object> shape = shape(connection, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
-        if (SpaceCatalog.shapeProblem(shape) != null) {
-            return SpaceCatalog.spaceList(shape, null)
-        }
-        Map<String, Object> found = query(connection, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT],
-            SpaceCatalog.READ, SpaceCatalog.CAP)
-        return SpaceCatalog.spaceList(shape, found)
-    }
-
-    /* The read path asked whether it resolves, one building block at a time.
-     *
-     * This method reports faults, so it may not raise one: every step is guarded on
-     * its own, and a step that could not be attempted says so instead of counting
-     * as a pass. The wording and every decision about it live in SelfCheck, which
-     * names nothing that needs an instance and is therefore under test offline.
-     *
-     * deep=false is what a standard report pays for: one component lookup and one
-     * class load. deep=true additionally creates the executor and reads the
-     * catalogue, which opens a database connection, and is reached from diag=true
-     * alone. */
-    static List<Map<String, Object>> probe(boolean deep) {
-        List<Map<String, Object>> steps = new ArrayList<Map<String, Object>>()
-
-        Map<String, Object> resolved = factory()
-        Object executorFactory = resolved.get("factory")
-        steps.add(SelfCheck.step(SelfCheck.STEP_FACTORY, executorFactory != null,
-            executorFactory == null ? String.valueOf(resolved.get("failure")) : null))
-
-        Class callbackType = null
-        String callbackFailure = null
-        try {
-            Class loaded = Class.forName(CONNECTION_CALLBACK)
-            /* Loading the interface is half the question. Whether a closure can be
-             * coerced to it is the other half, and it is the half the read actually
-             * depends on. */
-            Closure nothing = { Object connection -> return null }
-            if (callback(loaded, nothing) == null) {
-                callbackFailure = "The callback interface loaded but no implementation could be built for it."
-            } else {
-                callbackType = loaded
-            }
-        } catch (Throwable error) {
-            callbackFailure = "The connection callback interface could not be loaded: " + why(error)
-        }
-        steps.add(SelfCheck.step(SelfCheck.STEP_CALLBACK, callbackType != null, callbackFailure))
-
-        Object executor = null
-        if (!deep) {
-            steps.add(SelfCheck.onRequest(SelfCheck.STEP_EXECUTOR))
-        } else if (executorFactory == null) {
-            steps.add(SelfCheck.blocked(SelfCheck.STEP_EXECUTOR, SelfCheck.STEP_FACTORY))
-        } else {
-            try {
-                executor = call(executorFactory, "createReadOnly")
-                steps.add(SelfCheck.step(SelfCheck.STEP_EXECUTOR, executor != null,
-                    "createReadOnly() returned no executor."))
-            } catch (Throwable error) {
-                steps.add(SelfCheck.step(SelfCheck.STEP_EXECUTOR, false,
-                    "The read-only executor could not be created: " + why(error)))
-            }
-        }
-
-        if (!deep) {
-            steps.add(SelfCheck.onRequest(SelfCheck.STEP_CATALOGUE))
-        } else if (executor == null || callbackType == null) {
-            steps.add(SelfCheck.blocked(SelfCheck.STEP_CATALOGUE,
-                executor == null ? SelfCheck.STEP_EXECUTOR : SelfCheck.STEP_CALLBACK))
-        } else {
-            try {
-                Closure read = { Object connection ->
-                    return shape(connection, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
-                }
-                Object answer = call(executor, "execute", callback(callbackType, read))
-                steps.add(SelfCheck.catalogue(answer instanceof Map ? (Map<String, Object>) answer : null))
-            } catch (Throwable error) {
-                steps.add(SelfCheck.step(SelfCheck.STEP_CATALOGUE, false,
-                    "The database catalogue could not be read: " + why(error)))
-            }
-        }
-        return steps
     }
 }
 
@@ -2812,7 +2802,6 @@ class SelfCheck {
         return out.append("</div>").toString()
     }
 }
-
 
 /* =============================================================================
  * Endpoint
@@ -3659,7 +3648,7 @@ appFootprint(
     /* The read path behind the export, asked whether it resolves. Rendering the
      * report reaches none of it, so the call is guarded to the point of paranoia:
      * a self-check able to take the report down with it is worse than none, and
-     * this release exists because an endpoint stopped answering at all. A class
+     * this section exists because an endpoint stopped answering at all. A class
      * that cannot even be touched is an answer too, and it is printed as one. */
     List<Map<String, Object>> readPath = null
     try {
@@ -4675,7 +4664,7 @@ appFootprint(
 
         Map<String, Object> listed = null
         try {
-            listed = (Map<String, Object>) Db.withConnection(executorFactory) { Object connection ->
+            listed = (Map<String, Object>) Db.withConnection(executorFactory) { Connection connection ->
                 return Db.spaceRows(connection)
             }
         } catch (Throwable error) {

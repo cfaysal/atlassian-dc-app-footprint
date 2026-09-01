@@ -11,6 +11,24 @@ published in this repository.
 
 ## Unreleased
 
+### Withdrawn
+
+- **Confluence: `4.9` is withdrawn and its code taken back to `4.8` (`4.10`).** 4.9 rebuilt
+  the whole database read path on dynamic typing, +524/-234 lines, against the hypothesis
+  that `java.sql.*` was not visible to the ScriptRunner classloader. **That hypothesis is
+  disproven.** The `500` came from a stale ScriptRunner endpoint registration: after deleting
+  and re-creating the endpoint, the unchanged `4.8` loads and exports on the customer
+  instance. 4.9 itself never ran on any instance, so what was on `main` was a large rewrite
+  aimed at a cause that does not exist, sitting in front of the one build that is measured
+  working. The endpoint source of `4.10` is the `4.8` source: the same `SELECT`, the same
+  bound status, the same catalogue check, the same typed `Connection` signatures and the same
+  hand-built JDK proxy for the SAL callback.
+  4.9 stays in the history and in this file. A version that was committed does not disappear
+  because it turned out to be unnecessary, and the next reader has to be able to find out why
+  it existed and why it was taken back. Nothing here is a claim about `4.10` on an instance:
+  what is measured is that its endpoint source matches the build that ran there, plus the
+  additions listed below.
+
 ### Added
 
 - **Confluence: the read path behind the export answers for itself, in the report**
@@ -25,6 +43,14 @@ published in this repository.
   them refused. A step that was not attempted says so and is never counted as a pass. A
   self-check that cannot run at all is reported as a refusal rather than taken out on the
   report, which is the failure mode this release exists for.
+  **Re-established on the `4.8` code in `4.10`, and it is the only part of 4.9 that was kept.**
+  It was worth keeping on its own merits and not as a by-product of the rewrite: the reason a
+  request failed has to reach the browser, because the administrators of that instance cannot
+  open `atlassian-confluence.log` and the referral number from a `500` matched no line in
+  their Splunk. `SelfCheck` holds every decision and every sentence and touches nothing that
+  needs an instance, so the offline suite exercises all of it; `Db.probe` holds the four
+  attempts, guards each one separately and is held to that by assertions read off the source.
+  What did NOT come along is the dynamic typing that 4.9 wrapped it in.
 
 - **Jira: the module behind a condition or validator is named where the descriptor allows it**
   (`3.6`). The implementation class identifies the app but not the module: measured on one
@@ -158,8 +184,12 @@ published in this repository.
 
 ### Fixed
 
-- **Confluence: `4.8` did not load on the customer instance, and 4.9 removes the class of
-  fault rather than diagnosing it.** After 4.8 the endpoint answered `500` to the plain `GET`
+- **WITHDRAWN in `4.10`, see the Withdrawn section above. The premise of this entry is
+  disproven: the fault was a stale ScriptRunner endpoint registration, not a type that could
+  not resolve, and the unchanged `4.8` loads and exports once the endpoint is re-created. The
+  entry is kept verbatim because the reasoning it records is what produced 4.9.**
+  Confluence: `4.8` did not load on the customer instance, and 4.9 removes the class of
+  fault rather than diagnosing it. After 4.8 the endpoint answered `500` to the plain `GET`
   as well - a request that reaches no line of the new database code. A fault that hits a
   request unable to execute the new code is a fault at load time, and a script that does not
   load fails every call it will ever get. 4.8 named seven types the earlier versions did not:

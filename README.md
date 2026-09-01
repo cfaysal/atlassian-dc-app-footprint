@@ -11,7 +11,7 @@ These scripts measure that difference.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.8 |
-| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.9 |
+| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.10 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
 building the removal-risk section of an audit report, or justifying to a budget owner
@@ -158,12 +158,6 @@ from inside a ScriptRunner REST endpoint, so the picker refused on every instanc
 opened on. The columns are verified through the database catalogue before the statement
 runs: a column that moved in an upgrade is named in the refusal rather than turning into a
 list of every space there is.
-
-No type on that path is named statically. Every signature and local is `Object`, the calls go
-through one dynamic dispatch point and the SAL callback is a closure coerced to an interface
-loaded by name, so a package that is absent or invisible to the ScriptRunner classloader
-cannot keep the file from loading. That is not a style choice: a resolution failure at load
-time takes down every request, including the ones that would never have run the code.
 
 Where that path breaks, the report says which part of it broke. Add `diag=true` and the page
 carries a table of four building blocks - the executor factory, the callback interface, the

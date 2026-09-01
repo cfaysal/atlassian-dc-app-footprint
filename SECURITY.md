@@ -20,11 +20,10 @@ concatenated into it, and the read-only executor makes that claim enforceable ra
 matter of reading the source. The Java service that used to answer this question is a Spring
 AOP proxy that cannot be resolved from inside a ScriptRunner REST endpoint.
 
-That read path names no JDBC and no reflection type statically; it reaches them through
-dynamic dispatch, and its SAL callback is a closure coerced to an interface loaded by name.
-The optional self-check behind `diag=true` reports whether those parts resolve. It prints the
-exception type and the exception message and nothing else: no stack trace, no server path, no
-statement text and no data. It performs one catalogue read and no write.
+The optional self-check behind `diag=true` reports whether the parts of that read path
+resolve. It prints the exception type and the exception message and nothing else: no stack
+trace, no server path, no statement text and no data. It performs one catalogue read and no
+write.
 
 The two endpoints reach Confluence differently, and the difference matters for you:
 
