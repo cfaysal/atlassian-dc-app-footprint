@@ -1947,7 +1947,116 @@ for (int index = 0; index < endpointText.length(); index++) {
 check("no raw character above ASCII survives in the source", aboveAscii, 0)
 ok("the glyphs that were raw are still there, as escapes",
     endpointText.contains("\\u2014") && endpointText.contains("\\u00B7"))
-check("the report names the version that produced it", Cfp.VERSION, "4.10")
+check("the report names the version that produced it", Cfp.VERSION, "4.11")
+
+/* ---- 30. OP-1066 the second macro name source ----------------------------- */
+
+/* The content index is queried once per macro name known before the scan, so the
+ * set of names decides what can be found at all. These cases hold the part of that
+ * which needs no instance: which catalogue names are taken, and how an app whose
+ * names could not be established is allowed to read. */
+
+check("catalog contributes a name the descriptor walk missed",
+    Cfp.catalogOnlyNames(["alpha", "beta"], ["alpha"]), ["beta"])
+check("catalog contributes nothing when the descriptors already had it",
+    Cfp.catalogOnlyNames(["alpha"], ["alpha"]), [])
+check("a blank catalog name is not a question and is dropped",
+    Cfp.catalogOnlyNames(["alpha", "", "   ", null, "beta"], ["alpha"]), ["beta"])
+check("a duplicate inside the catalog is taken once",
+    Cfp.catalogOnlyNames(["beta", "beta"], []), ["beta"])
+check("an absent catalog is an empty contribution, not a crash",
+    Cfp.catalogOnlyNames(null, ["alpha"]), [])
+check("an app with no enumerated macro takes every catalog name",
+    Cfp.catalogOnlyNames(["one", "two"], null), ["one", "two"])
+
+/* The measured shape this exists for: one enabled module classified as a macro
+ * host, no macro enumerated from it. Whether that reads as a zero depends on
+ * whether the catalogue answered, and on nothing else. */
+AppFootprint host = new AppFootprint()
+host.modules.add(module("MacroModuleDescriptor", true))
+host.finish()
+ok("a macro host with no enumerated macro and no catalog is narrowed",
+    host.macroEnumerationNarrowed())
+
+AppFootprint hostAnswered = new AppFootprint()
+hostAnswered.modules.add(module("MacroModuleDescriptor", true))
+hostAnswered.macroCatalogConsulted = Boolean.TRUE
+hostAnswered.finish()
+ok("a macro host is not narrowed once the catalog answered",
+    !hostAnswered.macroEnumerationNarrowed())
+
+AppFootprint hostWithMacro = new AppFootprint()
+hostWithMacro.modules.add(module("MacroModuleDescriptor", true))
+MacroFootprint hostMacro = new MacroFootprint()
+hostMacro.macroName = "gamma"
+hostMacro.moduleEnabled = Boolean.TRUE
+hostWithMacro.macros.add(hostMacro)
+hostWithMacro.finish()
+ok("an app that enumerated a macro is never narrowed",
+    !hostWithMacro.macroEnumerationNarrowed())
+
+AppFootprint noHost = new AppFootprint()
+noHost.modules.add(module("WebItemModuleDescriptor", true))
+noHost.finish()
+ok("an app without a macro host is not narrowed",
+    !noHost.macroEnumerationNarrowed())
+
+/* A macro whose name came from the catalogue carries no module of its own, so the
+ * cross-check has to count it or it reports a gap it has just explained. */
+AppFootprint catalogFed = new AppFootprint()
+catalogFed.modules.add(module("MacroModuleDescriptor", true))
+MacroFootprint fromCatalog = new MacroFootprint()
+fromCatalog.macroName = "delta"
+fromCatalog.nameSource = Cfp.FROM_CATALOG
+catalogFed.macros.add(fromCatalog)
+catalogFed.macroCatalogConsulted = Boolean.TRUE
+catalogFed.catalogMacroCount = 1
+catalogFed.finish()
+check("a catalog macro explains its host module", catalogFed.diagnostics.size(), 0)
+check("a catalog macro has no enabled module of its own", catalogFed.enabledMacroCount, 0)
+check("provenance defaults to the descriptor", new MacroFootprint().nameSource, Cfp.FROM_DESCRIPTOR)
+
+/* The verdict. This is the case the whole change exists for: before it, such an
+ * app fell through to the closing branch and read as carrying no footprint, with
+ * a complete archived scan and every figure at zero. */
+ImpactAssessment narrowedImpact = ImpactAnalyzer.assessConfluence(
+    host, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("a narrowed app is held at review even with a complete archived scan",
+    narrowedImpact.level, "REVIEW_REQUIRED")
+ok("a narrowed app is marked partial", narrowedImpact.partial)
+ok("the reason says no macro name was searched for",
+    narrowedImpact.reasons.get(0).contains("no name was searched for"))
+ok("the reason refuses the word zero for the figures",
+    narrowedImpact.reasons.get(0).contains("are not measured and are not a zero"))
+
+ImpactAssessment answeredImpact = ImpactAnalyzer.assessConfluence(
+    hostAnswered, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("once the catalog answered, a real zero is allowed to be a zero",
+    answeredImpact.level, "NO_DETECTABLE_FOOTPRINT")
+
+/* An app with no macro host at all keeps the verdict it had before this change:
+ * the gate must not turn every quiet app into a review. */
+ImpactAssessment noHostImpact = ImpactAnalyzer.assessConfluence(
+    noHost, true, true, Long.valueOf(100L), Long.valueOf(10L), false)
+check("an app without a macro host still reaches a complete zero",
+    noHostImpact.level, "NO_DETECTABLE_FOOTPRINT")
+
+/* Source contract. The catalogue resolution names its type by string and reports a
+ * failure as a failure; both are the reason this class exists and neither is
+ * reachable from the offline cut, so they are read off the source. */
+String catalogSource = endpointText
+ok("the catalogue is resolved by name, not by a static type reference",
+    catalogSource.contains('static final String MANAGER = "com.atlassian.confluence.macro.browser.MacroMetadataManager"'))
+ok("the catalogue is never named as an import",
+    !catalogSource.contains("import com.atlassian.confluence.macro.browser.MacroMetadataManager"))
+ok("an unreachable catalogue is reported, not returned as empty",
+    catalogSource.contains("could not be obtained") && catalogSource.contains("No macro name was taken from it."))
+ok("the catalogue is asked once per run, not once per app",
+    catalogSource.contains("Map<String, Object> macroCatalog = MacroCatalog.load()"))
+ok("only names the catalogue itself attributes to the app are taken",
+    catalogSource.contains("macroCatalogByPlugin.get(app.pluginKey)"))
+ok("the coverage line names both sources",
+    catalogSource.contains("Names come from two sources"))
 
 /* ---- result --------------------------------------------------------------- */
 

@@ -31,6 +31,32 @@ published in this repository.
 
 ### Added
 
+- **Confluence: a macro an app builds at runtime is no longer invisible** (`4.11`). The
+  content index is queried once per macro name that is known before the scan, and the
+  names came from one place only: a module descriptor implementing `MacroMetadataSource`.
+  An app that registers a single generic macro host and instantiates its macros at runtime
+  out of its own storage therefore contributed no name, so no `MacroUsageQuery` was ever
+  built for it. The figures that came out were not zero, they were unasked, and nothing in
+  the report said so.
+  Measured on a customer instance against ScriptRunner for Confluence 10.8.0: 99 enabled
+  modules, one of them classified as a macro module, zero macros enumerated, every usage
+  figure at zero, while the app's own registry export held 17 script macros, 2 CQL
+  functions, 3 REST endpoints and 3 jobs.
+  The macro name list now has a second source, the instance-wide macro catalogue
+  (`MacroMetadataManager.getAllMacroMetadata()`). A name is attributed to an app only when
+  the catalogue itself names that plugin key as the owner, so nothing is guessed, and each
+  macro in the report carries where its name came from. The catalogue is resolved by name
+  and every read is guarded separately, for the same reason the space picker is: a Spring
+  component reaching a ScriptRunner endpoint as an AOP proxy is what broke that path twice.
+  A catalogue that cannot be reached is reported as unreachable and never as an empty one.
+- **Confluence: an app whose macro names could not be established reads as not measured**
+  (`4.11`). Where neither source produced a name, the four macro usage figures render as
+  not measured rather than as zero, and the app is held at Review required. Before this,
+  such an app reached the closing verdict and read as having no detectable footprint. That
+  it did not happen on the instance where this was found was luck: the incomplete archived
+  scan caught it one branch earlier. `hasInventoryOnlyPersistenceSignals` covers blueprints,
+  templates and custom content, and a macro host was not among them.
+
 - **Confluence: the read path behind the export answers for itself, in the report**
   (`4.9`). The instance this was built for does not give its administrators access to
   `atlassian-confluence.log`, so a failure there is a referral number and nothing else. The

@@ -162,13 +162,51 @@ class Cfp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "4.10"
+    static final String VERSION = "4.11"
 
     static final String MEASURED = "measured"
     static final String DISABLED = "disabled"
     static final String BUDGET = "budget"
     static final String ERROR = "error"
     static final String PARTIAL = "partial"
+
+    /* OP-1066. Where the name of a macro came from. The content index is queried
+     * by name, so the set of names decides what can be found at all, and a reader
+     * has to be able to tell a name the app declared as a module from one that
+     * only the instance-wide catalogue knew about. */
+    static final String FROM_DESCRIPTOR = "descriptor"
+    static final String FROM_CATALOG = "catalog"
+
+    /* Names the catalogue holds for one app that the descriptor walk did not
+     * produce, in catalogue order and without duplicates. Kept free of every
+     * Confluence type so the offline suite can hold it to its behaviour: the
+     * extraction of names from macro metadata is the part that needs an instance,
+     * the decision what to do with them is not. A blank name is dropped rather
+     * than scanned, because MacroUsageQuery on an empty string is not a question. */
+    static List<String> catalogOnlyNames(Collection<String> catalogNames, Collection<String> alreadyEnumerated) {
+        List<String> fresh = new ArrayList<String>()
+        if (catalogNames == null) {
+            return fresh
+        }
+        /* One set carries both rejections. A name the descriptor walk already
+         * produced and a name this loop has already taken are the same thing to the
+         * caller, so seen grows as names are accepted. */
+        Set<String> seen = new HashSet<String>()
+        if (alreadyEnumerated != null) {
+            seen.addAll(alreadyEnumerated)
+        }
+        for (String name : catalogNames) {
+            if (name == null || name.trim().isEmpty()) {
+                continue
+            }
+            if (seen.contains(name)) {
+                continue
+            }
+            seen.add(name)
+            fresh.add(name)
+        }
+        return fresh
+    }
 
     static String html(Object value) {
         if (value == null) {
@@ -673,6 +711,11 @@ class ExtensionModuleInfo {
 
 class MacroFootprint {
     String source
+
+    /* OP-1066. Cfp.FROM_DESCRIPTOR or Cfp.FROM_CATALOG. Defaulted to the
+     * descriptor because every macro found before this existed came from there,
+     * so an unset value can never silently claim the wider provenance. */
+    String nameSource = Cfp.FROM_DESCRIPTOR
     String macroName
     String displayName
     String descriptorName
@@ -831,6 +874,22 @@ class AppFootprint {
     int diagnosticCount
     int observationCount
 
+    /* OP-1066. Whether the instance-wide macro catalogue answered for this run,
+     * and how many names it contributed to this app. TRUE means it answered, even
+     * when it contributed nothing; FALSE means it did not, and null means it was
+     * never asked. The three cases have to stay apart, because they are the
+     * difference between a measured zero and an unasked one. */
+    Boolean macroCatalogConsulted
+    int catalogMacroCount
+
+    /* A macro host whose macros the descriptor walk cannot see, with no catalogue
+     * to fall back on. The content index is queried once per known macro name, so
+     * an app in this state had no name searched for at all and its macro figures
+     * are unasked rather than unfound. */
+    boolean macroEnumerationNarrowed() {
+        return categoryCount("Macros") > 0 && macros.isEmpty() && macroCatalogConsulted != Boolean.TRUE
+    }
+
     void finish() {
         enabledModuleCount = 0
         enabledMacroCount = 0
@@ -913,8 +972,12 @@ class AppFootprint {
          * not macros.size() - comparing against the full list would fire on every app
          * that ships a disabled macro module. diagnosticCount is already assigned above,
          * so it is incremented here to keep the JSON/CSV/HTML counters consistent. */
+        /* OP-1066 widened the right-hand side. A macro whose name came from the
+         * instance-wide catalogue has no enabled module of its own and never will,
+         * so counting only enabledMacroCount would report a gap against every host
+         * module the catalogue had just explained. */
         int classifiedMacroModules = categoryCount("Macros")
-        if (classifiedMacroModules != enabledMacroCount) {
+        if (classifiedMacroModules != enabledMacroCount + catalogMacroCount) {
             /* Nothing failed here, so this is an observation and not a suppressed
              * read error. It names the descriptor classes it counted, bounded the
              * way the macro name collision bounds its list, because "6 against 4"
@@ -929,7 +992,9 @@ class AppFootprint {
             }
             Cfp.observe(diagnostics, observations, "macro cross-check: " + classifiedMacroModules +
                 " enabled module(s) classified as \"Macros\", " + enabledMacroCount +
-                " macro(s) enumerated. Classified by descriptor class: " + Cfp.nameList(classifiedDescriptors) +
+                " macro(s) enumerated from descriptors and " + catalogMacroCount +
+                " from the instance-wide catalogue. Classified by descriptor class: " +
+                Cfp.nameList(classifiedDescriptors) +
                 " - the enumeration or the class name classification may be incomplete")
             diagnosticCount++
             observationCount++
@@ -1098,6 +1163,22 @@ class ImpactAnalyzer {
         }
         if (measured.level == "REVIEW_REQUIRED") {
             return measured
+        }
+        /* OP-1066. Ahead of every remaining branch, and deliberately ahead of the
+         * archived one: an app whose macro names were never known is not a weaker
+         * case of an incomplete archived scan, it is a case where nothing was
+         * asked. Before this branch existed, such an app reached the closing
+         * verdict below and read as a decommission candidate carrying nothing but
+         * zeros. That it did not happen on the instance this was found on was luck
+         * - the archived branch caught it first. */
+        if (app.macroEnumerationNarrowed()) {
+            ImpactAssessment narrowed = special("REVIEW_REQUIRED", "Review required", 2,
+                "The app registers a macro host but declares no macro as a plugin module, and the " +
+                "instance-wide macro catalogue did not answer. The content index is queried once per " +
+                "known macro name, so no name was searched for. The macro figures of this app are not " +
+                "measured and are not a zero.")
+            narrowed.partial = true
+            return narrowed
         }
         if (app.hasArchivedFootprint()) {
             ImpactAssessment legacy = special("LEGACY_ONLY", "Legacy only", 3,
@@ -1675,6 +1756,128 @@ class Db {
  * then render an empty Decision column and overwrite every administrator note.
  * Same discipline as the usage measurement above - a failed read is never
  * reported as an empty or zero result. */
+/* OP-1066. The instance-wide macro catalogue, as a second source of macro names.
+ *
+ * WHY THIS EXISTS. The descriptor walk records a macro only when the module
+ * descriptor implements MacroMetadataSource. An app that registers one generic
+ * host module and instantiates its macros at runtime out of its own storage
+ * therefore contributes no name at all, and a name is exactly what the content
+ * index is queried with: Analyzer.scanMacroName runs once per known macro and
+ * builds a MacroUsageQuery from that string. No name means no query, and the
+ * figures that come out are unasked rather than unfound.
+ *
+ * Measured on a customer instance against Adaptavist ScriptRunner for Confluence
+ * 10.8.0: 99 enabled modules, one of them classified as a macro module, zero
+ * macros enumerated, while the app's own registry export held 17 script macros.
+ *
+ * THE SOURCE. MacroMetadataManager.getAllMacroMetadata() is documented as
+ * "Retrieve all available metadata for macros in the system", and each
+ * MacroMetadata carries getMacroName() and getPluginKey(). Attribution therefore
+ * needs no heuristic and nothing is guessed: a name is attributed to the app whose
+ * plugin key the catalogue itself names, or to nobody.
+ *
+ * RESOLVED BY NAME, exactly like Db. The manager is a Spring component and can
+ * reach a ScriptRunner endpoint as an AOP proxy; naming such a type statically is
+ * what took the export space picker down twice (OP-1008, OP-1063). Every read is
+ * guarded separately, and a failure is reported as a failure. An empty catalogue
+ * and an unreachable one must never produce the same result, because the whole
+ * point of this class is that a zero says whether anything was asked. */
+class MacroCatalog {
+
+    static final String MANAGER = "com.atlassian.confluence.macro.browser.MacroMetadataManager"
+
+    /* Keys: ok (Boolean), failure (String or null), byPlugin (plugin key to the
+     * list of macro names it owns), total (int, names accepted overall). byPlugin
+     * is always a map, never null, so a caller cannot read a failure as an empty
+     * catalogue by accident - it has to look at ok. */
+    static Map<String, Object> load() {
+        Map<String, List<String>> byPlugin = new LinkedHashMap<String, List<String>>()
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("ok", Boolean.FALSE)
+        out.put("failure", null)
+        out.put("byPlugin", byPlugin)
+        out.put("total", Integer.valueOf(0))
+
+        Object manager = null
+        try {
+            manager = ComponentLocator.getComponent(Class.forName(MANAGER))
+        } catch (Throwable error) {
+            out.put("failure", "The instance-wide macro catalogue could not be obtained: " +
+                Db.why(error) + ". No macro name was taken from it.")
+            return out
+        }
+        if (manager == null) {
+            out.put("failure", "The instance-wide macro catalogue resolved but no component was " +
+                "returned. No macro name was taken from it.")
+            return out
+        }
+
+        Object all = null
+        try {
+            all = InvokerHelper.invokeMethod(manager, "getAllMacroMetadata", new Object[0])
+        } catch (Throwable error) {
+            out.put("failure", "The instance-wide macro catalogue was reached but did not answer: " +
+                Db.why(error) + ". No macro name was taken from it.")
+            return out
+        }
+        if (!(all instanceof Collection)) {
+            out.put("failure", "The instance-wide macro catalogue answered with " +
+                (all == null ? "nothing" : all.getClass().getSimpleName()) +
+                " instead of a collection. No macro name was taken from it.")
+            return out
+        }
+
+        /* The catalogue answered. From here a name that cannot be read is a skipped
+         * name and not a failed catalogue, so ok is already true: the difference
+         * that matters to every caller is whether the question was asked at all. */
+        int total = 0
+        int unattributed = 0
+        for (Object entry : (Collection) all) {
+            String macroName = readString(entry, "getMacroName")
+            if (macroName == null || macroName.trim().isEmpty()) {
+                continue
+            }
+            /* getPluginKey is read as guardedly as the name rather than trusted: it is
+             * verified present on MacroMetadata in the Confluence javadoc, but this
+             * file runs on whatever version the customer has, and a macro that cannot
+             * be attributed has to stay unattributed instead of throwing. */
+            String pluginKey = readString(entry, "getPluginKey")
+            if (pluginKey == null || pluginKey.trim().isEmpty()) {
+                unattributed++
+                continue
+            }
+            List<String> names = byPlugin.get(pluginKey)
+            if (names == null) {
+                names = new ArrayList<String>()
+                byPlugin.put(pluginKey, names)
+            }
+            if (!names.contains(macroName)) {
+                names.add(macroName)
+                total++
+            }
+        }
+
+        out.put("ok", Boolean.TRUE)
+        out.put("total", Integer.valueOf(total))
+        if (unattributed > 0) {
+            out.put("failure", String.valueOf(unattributed) + " macro name(s) in the instance-wide " +
+                "catalogue name no owning app and were therefore not attributed to one.")
+        }
+        return out
+    }
+
+    /* One string off one catalogue entry, invoked by name for the same reason the
+     * manager itself is resolved by name. A value that cannot be read costs this one
+     * entry its attribution and never the walk over the rest of the catalogue. */
+    private static String readString(Object entry, String getter) {
+        try {
+            return (String) InvokerHelper.invokeMethod(entry, getter, new Object[0])
+        } catch (Throwable ignored) {
+            return null
+        }
+    }
+}
+
 class DecisionRead {
 
     static final String NONE = "none"
@@ -2866,6 +3069,25 @@ appFootprint(
      * happened. */
     List<String> globalObservations = new ArrayList<String>()
 
+    /* OP-1066. Loaded once for the whole run rather than per app: it is one call
+     * for the entire instance, and asking it per plugin would multiply the cost of
+     * the one thing that closes the gap. */
+    Map<String, Object> macroCatalog = MacroCatalog.load()
+    boolean macroCatalogOk = macroCatalog.get("ok") == Boolean.TRUE
+    String macroCatalogFailure = (String) macroCatalog.get("failure")
+    Map<String, List<String>> macroCatalogByPlugin =
+        (Map<String, List<String>>) macroCatalog.get("byPlugin")
+    if (!macroCatalogOk) {
+        Cfp.observe(globalDiagnostics, globalObservations,
+            "macro catalogue: " + macroCatalogFailure +
+            " Macros that an app instantiates at runtime instead of declaring as a plugin module " +
+            "are therefore invisible to this run, and the macro figures of such an app are not " +
+            "measured rather than zero.")
+    } else if (macroCatalogFailure != null) {
+        Cfp.observe(globalDiagnostics, globalObservations,
+            "macro catalogue: " + macroCatalogFailure)
+    }
+
     String instanceBaseUrl = null
     String instanceSiteTitle = null
     String instanceVersion = null
@@ -3080,6 +3302,25 @@ appFootprint(
                 macrosByName.put(macroName, macro)
             } else if (macro.moduleEnabled == null && module.enabled != null) {
                 macro.moduleEnabled = module.enabled
+            }
+        }
+
+        /* OP-1066. The second name source. Only names the catalogue itself attributes
+         * to this plugin key are taken, and only those the descriptor walk did not
+         * already produce, so nothing is guessed and nothing is counted twice. They
+         * carry no module of their own, which is the point: the app registered one
+         * host and built these at runtime. */
+        app.macroCatalogConsulted = Boolean.valueOf(macroCatalogOk)
+        if (macroCatalogOk) {
+            List<String> catalogNames = macroCatalogByPlugin.get(app.pluginKey)
+            for (String catalogName : Cfp.catalogOnlyNames(catalogNames, macrosByName.keySet())) {
+                MacroFootprint macro = new MacroFootprint()
+                macro.source = "APP"
+                macro.nameSource = Cfp.FROM_CATALOG
+                macro.macroName = catalogName
+                macro.displayName = catalogName
+                macrosByName.put(catalogName, macro)
+                app.catalogMacroCount++
             }
         }
 
@@ -4102,17 +4343,26 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
         for (String reason : impact.reasons) {
             html.append("<li>" + esc(reason) + "</li>")
         }
+        /* OP-1066. Four of these six figures are counted from macro usage, and macro
+         * usage is only ever asked about once per known macro name. Where no name
+         * was known, they are not zero but unmeasured, and printing a 0 is exactly
+         * what let an app carrying seventeen runtime-defined macros read as having
+         * no footprint at all. */
+        boolean macroFiguresUnasked = app.macroEnumerationNarrowed()
+        String unasked = '<span class="warn" title="Not measured: no macro name was known to search for">' +
+            Cfp.NA + '</span>'
+
         html.append("""</ul>
 </div>
 
 <div class="metric-group-title">Current Footprint</div>
 <div class="metrics">
   <div class="metric"><div class="metric-value">${num(app.enabledModuleCount)}</div><div class="metric-label">Enabled Extension Modules</div></div>
-  <div class="metric"><div class="metric-value">${num(app.macros.size())}</div><div class="metric-label">Provided Macros (${num(app.enabledMacroCount)} enabled)</div></div>
-  <div class="metric"><div class="metric-value">${num(app.currentUsedMacroCount)}</div><div class="metric-label">Used Macros</div></div>
-  <div class="metric"><div class="metric-value">${num(app.currentUniqueContentCount)}${app.currentUsagePartial ? '<span class="warn" title="Partial / lower bound">*</span>' : ''}</div><div class="metric-label">Unique Current Content</div></div>
-  <div class="metric"><div class="metric-value">${num(app.currentAssociations)}${app.currentUsagePartial ? '<span class="warn" title="Partial / lower bound">*</span>' : ''}</div><div class="metric-label">Current Macro-Content Associations</div></div>
-  <div class="metric"><div class="metric-value">${num(app.currentSpaceCount)}</div><div class="metric-label">Current Spaces</div></div>
+  <div class="metric"><div class="metric-value">${macroFiguresUnasked ? unasked : num(app.macros.size())}</div><div class="metric-label">Provided Macros (${num(app.enabledMacroCount)} enabled)</div></div>
+  <div class="metric"><div class="metric-value">${macroFiguresUnasked ? unasked : num(app.currentUsedMacroCount)}</div><div class="metric-label">Used Macros</div></div>
+  <div class="metric"><div class="metric-value">${macroFiguresUnasked ? unasked : num(app.currentUniqueContentCount) + (app.currentUsagePartial ? '<span class="warn" title="Partial / lower bound">*</span>' : '')}</div><div class="metric-label">Unique Current Content</div></div>
+  <div class="metric"><div class="metric-value">${macroFiguresUnasked ? unasked : num(app.currentAssociations) + (app.currentUsagePartial ? '<span class="warn" title="Partial / lower bound">*</span>' : '')}</div><div class="metric-label">Current Macro-Content Associations</div></div>
+  <div class="metric"><div class="metric-value">${macroFiguresUnasked ? unasked : num(app.currentSpaceCount)}</div><div class="metric-label">Current Spaces</div></div>
 </div>
 """)
 
@@ -4146,7 +4396,7 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
 
         html.append("""
   </div>
-  <div class="coverage"><strong>Coverage:</strong> Macro footprint is measured from the Confluence content index. Blueprint/template/custom-content modules are inventoried but do not receive a generic usage count. UI, REST, servlet, job and listener modules are capability signals only.</div>
+  <div class="coverage"><strong>Coverage:</strong> Macro footprint is measured from the Confluence content index, and the index is queried once per macro name that is known before the scan. Names come from two sources: the plugin module descriptors of each app, and the instance-wide macro catalogue, which is what makes a macro visible that an app instantiates at runtime instead of declaring as a module. An app whose macro names could be established from neither source is reported as not measured, never as zero. Blueprint/template/custom-content modules are inventoried but do not receive a generic usage count. UI, REST, servlet, job and listener modules are capability signals only.</div>
   <details><summary>Extension module types</summary><div class="table-wrap"><table><thead><tr><th>Descriptor</th><th class="num">Modules</th></tr></thead><tbody>
 """)
         for (Map.Entry<String, Integer> type : app.moduleTypeCounts.entrySet()) {
@@ -4299,7 +4549,8 @@ details{margin-top:9px}summary{cursor:pointer;color:var(--blue);font-size:12px;f
     <li>A page containing two different macros from the same app contributes two macro-content associations but one unique content object for the app.</li>
     <li>Current usage contains only content assigned to <span class="mono">SpaceStatus.CURRENT</span>. Archived spaces are kept separate.</li>
     <li>Content not attributable to CURRENT or ARCHIVED spaces is retained as "other" in JSON/CSV detail and is never promoted into Current usage.</li>
-    <li>Provided Macros are discovered through <span class="mono">MacroMetadataSource</span>, including modern XHTML macros. A disabled app/module can still have content references and therefore a measurable footprint.</li>
+    <li>Provided Macros are discovered through <span class="mono">MacroMetadataSource</span> on the app's own module descriptors, including modern XHTML macros. A disabled app/module can still have content references and therefore a measurable footprint.</li>
+    <li>Macros that an app builds at runtime out of its own storage declare no module of their own and are invisible to that walk. They are picked up from the instance-wide macro catalogue instead, attributed only to the app the catalogue itself names as owner, and marked <span class="mono">catalog</span> in the macro table. Where the catalogue could not be reached, the macro figures of an affected app read as not measured rather than as zero, and the app is held at Review required.</li>
     <li>Native User Macros are read from <span class="mono">UserMacroLibrary</span>. Confluence may hide a user macro from that library when a plugin macro with the same name takes precedence.</li>
     <li>Blueprint, template and custom-content module counts are capability/inventory signals. Their actual generated/persisted object counts require dedicated resolvers.</li>
     <li>Impact is a local assessment heuristic configured in this script; it is not an Atlassian classification.</li>
