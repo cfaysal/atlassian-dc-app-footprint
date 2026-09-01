@@ -77,7 +77,11 @@ published in this repository.
   needs an instance, so the offline suite exercises all of it; `Db.probe` holds the four
   attempts, guards each one separately and is held to that by assertions read off the source.
   What did NOT come along is the dynamic typing that 4.9 wrapped it in.
-- **Jira: an installed but idle workflow capability is reported as such** (`3.9`). The report
+- **Jira: an installed but idle workflow capability is reported as such** (`3.10`). This
+  change was written against `3.8` and first carried the number `3.9`, which by then had
+  already been published from `main` for the character escaping below. Two different
+  contents under one number is a delivery fault rather than a cosmetic one, so it was
+  moved up before it ever reached the remote. The report
   used to print the same empty sentence in every app card, which made an app registering a
   dozen workflow modules and using none look exactly like an app that cannot contribute one at
   all. Three states are now separated: no workflow module renders no section, modules with

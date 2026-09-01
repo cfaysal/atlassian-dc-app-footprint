@@ -134,7 +134,7 @@ class Fp {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "3.9"
+    static final String VERSION = "3.10"
 
     /* A needle can only occur inside a single token, so shorter tokens are
      * dropped. Needles below this length fall back to a raw scan. */
