@@ -13,6 +13,19 @@ published in this repository.
 
 ### Added
 
+- **Confluence: the read path behind the export answers for itself, in the report**
+  (`4.9`). The instance this was built for does not give its administrators access to
+  `atlassian-confluence.log`, so a failure there is a referral number and nothing else. The
+  report now states whether the SAL executor factory is found, whether the callback interface
+  loads and can be implemented, whether a read-only executor can be created and whether the
+  space table columns can be read from the catalogue - per building block, with the exception
+  type and message on a refusal. No stack trace and no server path is printed.
+  It is not free and therefore not automatic: `diag=true` runs all four, a standard report
+  attempts only the two that cost a class load and prints a single line, and only when one of
+  them refused. A step that was not attempted says so and is never counted as a pass. A
+  self-check that cannot run at all is reported as a refusal rather than taken out on the
+  report, which is the failure mode this release exists for.
+
 - **Jira: the module behind a condition or validator is named where the descriptor allows it**
   (`3.6`). The implementation class identifies the app but not the module: measured on one
   instance, 34 app-and-class pairs covered 72 modules. The entry's own descriptor arguments are
@@ -145,7 +158,27 @@ published in this repository.
 
 ### Fixed
 
-- **Confluence: the space list of the export could not be read on any instance** (`4.8`).
+- **Confluence: `4.8` did not load on the customer instance, and 4.9 removes the class of
+  fault rather than diagnosing it.** After 4.8 the endpoint answered `500` to the plain `GET`
+  as well - a request that reaches no line of the new database code. A fault that hits a
+  request unable to execute the new code is a fault at load time, and a script that does not
+  load fails every call it will ever get. 4.8 named seven types the earlier versions did not:
+  `java.sql.Connection`, `DatabaseMetaData`, `PreparedStatement` and `ResultSet`,
+  `java.lang.reflect.InvocationHandler`, `Method` and `Proxy`, plus
+  `org.codehaus.groovy.runtime.InvokerHelper`, and it built the SAL callback as an anonymous
+  inner class inside a script file. None of them is named any more: every signature and local
+  on that path is `Object`, every call goes through one dynamic dispatch point, and the
+  callback is a Groovy closure coerced to an interface loaded by name, which leaves the JDK
+  proxy inside the Groovy runtime. What a type is not named by cannot fail to resolve for it.
+  **UNVERIFIED, and it stays that way: that those types were the cause.** The stack trace
+  behind the referral number is not reachable, so nothing here is a diagnosis. What is
+  measured is the absence of the dependency - the read path compiles on its own with one
+  import and its class file names none of those types, where the same measurement on the 4.8
+  file fails with ten unresolved classes. The behaviour of the picker is unchanged: the same
+  `SELECT`, the same bound status, the same catalogue check before the statement, the same
+  refusals.
+- **Confluence: the space list of the export could not be read on any instance** (`4.8`,
+  superseded by `4.9` above, which did not reach an instance in a loadable state).
   Opening "Export to Confluence" answered with `IllegalArgumentException:
   org.springframework.aop.SpringProxy referenced from a method is not visible from class
   loader ... ChainingClassLoader`. The stage resolved

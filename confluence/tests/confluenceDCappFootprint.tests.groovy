@@ -15,6 +15,12 @@
  * MultivaluedMap is declared with the one method the parameter helpers call, so
  * FakeParams below is a real stand-in and not a cast. */
 interface MultivaluedMap { Object getFirst(String name) }
+
+/* Db resolves exactly one platform type, the service locator, and it does so by
+ * name through Class.forName - which fails off-instance before the locator is ever
+ * reached. The stand-in therefore exists to make the cut compile, not to be
+ * consulted: what it proves is that Db names nothing else of the platform. */
+class ComponentLocator { static Object getComponent(Class type) { return null } }
 interface Plugin { }
 interface I18NBean { }
 interface ModuleDescriptor<T> { }
@@ -1796,13 +1802,330 @@ check("every failed read of the stage refuses instead of answering",
     spacesBranchText.count("return refuse(500, \"spaces\""), 5)
 ok("the picker binds the status rather than pasting it",
     endpointText.contains("query(connection, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT]"))
-ok("the endpoint runs no write statement", !endpointText.contains("executeUpdate("))
+ok("the endpoint runs no write statement", !endpointText.contains("executeUpdate"))
 ok("the endpoint prepares statements only from its own constants",
-    endpointText.count("prepareStatement(") == 1 && endpointText.contains("connection.prepareStatement(sql)"))
+    endpointText.count("\"prepareStatement\"") == 1 &&
+    endpointText.contains("call(connection, \"prepareStatement\", sql)"))
 ok("the retired API SpaceService import states why it is kept",
     endpointText.contains("no longer resolved") && endpointText.contains("SpringProxy"))
 ok("the picker announces a cut list in the browser",
     endpointText.contains("body.truncated===true"))
+
+/* ---- 27. the read path, dispatched dynamically ---------------------------- */
+
+/* Duck-typed JDBC. Not one of these implements a java.sql interface, and that is
+ * the whole point of the section: after 4.9 Db names no JDBC type, so an object
+ * carrying the right method names is all its dispatch can possibly require. The
+ * day a signature in Db is typed again, these fixtures stop satisfying it and this
+ * section goes red - which is the only way an off-instance suite can hold a rule
+ * about compile-time dependencies. */
+class FakeResultSet {
+    List<Map<String, String>> rows = new ArrayList<Map<String, String>>()
+    int cursor = -1
+    boolean closed = false
+    boolean next() { cursor++; return cursor < rows.size() }
+    String getString(String column) { return rows.get(cursor).get(column) }
+    void close() { closed = true }
+}
+
+class FakeMetaData {
+    Map<String, List<String>> tables = new LinkedHashMap<String, List<String>>()
+    List<String> asked = new ArrayList<String>()
+    List<FakeResultSet> handed = new ArrayList<FakeResultSet>()
+    boolean fail = false
+    Object getColumns(Object catalog, Object schema, Object table, Object columns) {
+        if (fail) { throw new IllegalStateException("catalogue closed") }
+        asked.add(String.valueOf(table))
+        FakeResultSet cursor = new FakeResultSet()
+        List<String> present = tables.get(String.valueOf(table))
+        for (String name : (present == null ? new ArrayList<String>() : present)) {
+            Map<String, String> row = new LinkedHashMap<String, String>()
+            row.put("COLUMN_NAME", name)
+            cursor.rows.add(row)
+        }
+        handed.add(cursor)
+        return cursor
+    }
+}
+
+class FakeStatement {
+    String sql = null
+    List<String> bound = new ArrayList<String>()
+    FakeResultSet results = new FakeResultSet()
+    boolean closed = false
+    boolean refuse = false
+    void setString(int index, String value) { bound.add(index + "=" + value) }
+    Object executeQuery() {
+        if (refuse) { throw new IllegalStateException("statement refused") }
+        return results
+    }
+    void close() { closed = true }
+}
+
+class FakeConnection {
+    FakeMetaData meta = new FakeMetaData()
+    FakeStatement statement = new FakeStatement()
+    boolean failOnMeta = false
+    Object getMetaData() {
+        if (failOnMeta) { throw new IllegalStateException("no metadata") }
+        return meta
+    }
+    Object prepareStatement(String sql) { statement.sql = sql; return statement }
+}
+
+interface FakeCallback { Object execute(Object connection) }
+
+def spaceRow = { String key, String name ->
+    Map<String, String> row = new LinkedHashMap<String, String>()
+    row.put("spacekey", key)
+    row.put("spacename", name)
+    return row
+}
+
+/* --- the two mechanisms that replaced the named types --------------------- */
+
+check("a call reaches a plain object that implements no interface",
+    Db.call(new FakeConnection(), "getMetaData").getClass().getSimpleName(), "FakeMetaData")
+check("a call passes its arguments through",
+    Db.call(new FakeStatement(), "setString", Integer.valueOf(1), "CURRENT") == null ? "void" : "value", "void")
+
+Class runtimeCallback = Class.forName("FakeCallback", true, SelfCheck.class.getClassLoader())
+Object builtCallback = Db.callback(runtimeCallback, { Object connection -> return "saw " + connection })
+ok("a closure becomes an implementation of an interface known only as a runtime class",
+    runtimeCallback.isInstance(builtCallback))
+check("the coerced callback reaches the closure", builtCallback.execute("connection"), "saw connection")
+ok("the coerced callback answers the object methods as well", builtCallback.equals(builtCallback))
+
+/* --- the shape check ------------------------------------------------------- */
+
+FakeConnection whole = new FakeConnection()
+whole.meta.tables.put("spaces", ["spaceid", "spacekey", "spacename", "spacestatus"])
+Map<String, Object> shapeWhole = Db.shape(whole, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
+check("a table carrying every column reports nothing missing",
+    ((List) shapeWhole.get("missing")).size(), 0)
+check("a shape check that worked reports no failure", shapeWhole.get("failure"), null)
+check("the shape check names the table it read", shapeWhole.get("table"), "spaces")
+check("the catalogue is asked in lower case first", whole.meta.asked.get(0), "spaces")
+check("one answer is enough, the second spelling is not asked for", whole.meta.asked.size(), 1)
+ok("every catalogue cursor is closed", whole.meta.handed.every { it.closed })
+check("a verified shape is no problem", SpaceCatalog.shapeProblem(shapeWhole), null)
+
+FakeConnection folded = new FakeConnection()
+folded.meta.tables.put("SPACES", ["SPACEKEY", "SPACENAME", "SPACESTATUS"])
+Map<String, Object> shapeFolded = Db.shape(folded, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
+check("an engine folding to upper case is read too", ((List) shapeFolded.get("missing")).size(), 0)
+check("both spellings are asked for before giving up", folded.meta.asked.size(), 2)
+
+FakeConnection movedColumn = new FakeConnection()
+movedColumn.meta.tables.put("spaces", ["spacekey", "spacename"])
+Map<String, Object> shapeMoved = Db.shape(movedColumn, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
+check("a column that moved in an upgrade is named", ((List) shapeMoved.get("missing")).get(0), "spacestatus")
+ok("the refusal names the missing column",
+    SpaceCatalog.shapeProblem(shapeMoved).contains("spacestatus"))
+
+FakeConnection blind = new FakeConnection()
+blind.failOnMeta = true
+Map<String, Object> shapeBlind = Db.shape(blind, SpaceCatalog.TABLE, SpaceCatalog.COLUMNS)
+ok("a catalogue that cannot be read says so",
+    String.valueOf(shapeBlind.get("failure")).startsWith("The database catalogue could not be read"))
+check("a failed catalogue read is not a table without columns",
+    ((List) shapeBlind.get("missing")).size(), 0)
+ok("a failed catalogue read refuses the stage",
+    SpaceCatalog.shapeProblem(shapeBlind).contains("could not be verified"))
+
+/* --- the statement --------------------------------------------------------- */
+
+FakeConnection reader = new FakeConnection()
+reader.statement.results.rows = [spaceRow("AAA", "Alpha"), spaceRow("BBB", null)]
+Map<String, Object> read = Db.query(reader, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT],
+    SpaceCatalog.READ, SpaceCatalog.CAP)
+check("the statement returns its rows", ((List) read.get("rows")).size(), 2)
+check("a read that worked carries no failure", read.get("failure"), null)
+check("a result inside the cap is not announced as cut", read.get("truncated"), Boolean.FALSE)
+check("the statement is the constant of this script", reader.statement.sql, SpaceCatalog.SQL)
+check("the status travels as a bound parameter", reader.statement.bound.join(","), "1=CURRENT")
+ok("the statement is closed", reader.statement.closed)
+check("the cap travels with the result", read.get("cap"), Integer.valueOf(SpaceCatalog.CAP))
+
+FakeConnection capped = new FakeConnection()
+capped.statement.results.rows = [spaceRow("A", "a"), spaceRow("B", "b"), spaceRow("C", "c")]
+Map<String, Object> cut = Db.query(capped, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT],
+    SpaceCatalog.READ, 2)
+check("a cut list carries the rows the cap allowed", ((List) cut.get("rows")).size(), 2)
+check("a cut list is announced", cut.get("truncated"), Boolean.TRUE)
+
+FakeConnection exact = new FakeConnection()
+exact.statement.results.rows = [spaceRow("A", "a"), spaceRow("B", "b")]
+check("a result ending exactly at the cap is not announced as cut",
+    Db.query(exact, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT], SpaceCatalog.READ, 2).get("truncated"),
+    Boolean.FALSE)
+
+FakeConnection refused = new FakeConnection()
+refused.statement.refuse = true
+Map<String, Object> refusedRead = Db.query(refused, SpaceCatalog.SQL, [SpaceCatalog.STATUS_CURRENT],
+    SpaceCatalog.READ, SpaceCatalog.CAP)
+ok("a statement that failed says so", String.valueOf(refusedRead.get("failure")).startsWith("The statement failed"))
+check("a failed statement returns no rows to be mistaken for an answer",
+    ((List) refusedRead.get("rows")).size(), 0)
+ok("a statement that failed is still closed", refused.statement.closed)
+
+/* --- the picker read end to end ------------------------------------------- */
+
+FakeConnection picker = new FakeConnection()
+picker.meta.tables.put("spaces", ["spacekey", "spacename", "spacestatus"])
+picker.statement.results.rows = [spaceRow("AAA", "Alpha"), spaceRow("BBB", null)]
+Map<String, Object> listed = Db.spaceRows(picker)
+check("the picker read answers with a list", listed.get("ok"), Boolean.TRUE)
+check("every space of the answer is carried", ((List) listed.get("spaces")).size(), 2)
+check("a nameless space is labelled with its key",
+    ((Map) ((List) listed.get("spaces")).get(1)).get("name"), "BBB")
+
+FakeConnection brokenSchema = new FakeConnection()
+brokenSchema.meta.tables.put("spaces", ["spacekey", "spacename"])
+Map<String, Object> refusedList = Db.spaceRows(brokenSchema)
+check("a missing column refuses the list", refusedList.get("ok"), Boolean.FALSE)
+ok("the refusal names the column", String.valueOf(refusedList.get("error")).contains("spacestatus"))
+ok("the refusal stays a failed read", String.valueOf(refusedList.get("error")).endsWith(SpaceCatalog.NOT_EMPTY))
+check("no statement is run once the shape check refuses", brokenSchema.statement.sql, null)
+
+check("no connection at all is a failed read, not an empty instance",
+    Db.spaceRows(null).get("ok"), Boolean.FALSE)
+ok("that refusal keeps the sentence",
+    String.valueOf(Db.spaceRows(null).get("error")).endsWith(SpaceCatalog.NOT_EMPTY))
+
+/* ---- 28. the read-path self-check ---------------------------------------- */
+
+/* --- what the report asks, off-instance ----------------------------------- */
+
+/* Nothing of SAL is on this classpath, so every probe here takes the refusal
+ * branch. That is the branch worth pinning: it is the one the customer instance
+ * would take, and it is the one that must never throw. */
+List<Map<String, Object>> shallow = Db.probe(false)
+check("the check covers four building blocks", shallow.size(), 4)
+check("the factory step is the first", shallow.get(0).get("step"), SelfCheck.STEP_FACTORY)
+check("a factory that cannot be obtained refuses", shallow.get(0).get("state"), SelfCheck.NO)
+ok("the refusal names what could not be obtained",
+    String.valueOf(shallow.get(0).get("detail")).contains("executor factory could not be obtained"))
+check("the callback step is the second", shallow.get(1).get("step"), SelfCheck.STEP_CALLBACK)
+check("a callback interface that cannot be loaded refuses", shallow.get(1).get("state"), SelfCheck.NO)
+check("the executor step is not attempted by a standard report",
+    shallow.get(2).get("state"), SelfCheck.NOT_ATTEMPTED)
+check("the catalogue step is not attempted by a standard report",
+    shallow.get(3).get("state"), SelfCheck.NOT_ATTEMPTED)
+check("an unattempted step says what it would have cost",
+    shallow.get(2).get("detail"), SelfCheck.ON_REQUEST)
+check("an unattempted step is not a failure", SelfCheck.failures(shallow).size(), 2)
+
+List<Map<String, Object>> deep = Db.probe(true)
+check("the requested check covers the same four blocks", deep.size(), 4)
+check("a step whose ground did not resolve is not attempted",
+    deep.get(2).get("state"), SelfCheck.NOT_ATTEMPTED)
+ok("it names the step that blocked it",
+    String.valueOf(deep.get(2).get("detail")).contains(SelfCheck.STEP_FACTORY))
+ok("a blocked step is never counted as a second failure",
+    SelfCheck.failures(deep).size() == 2)
+
+/* --- the wording of a step ------------------------------------------------- */
+
+check("a resolved step carries no detail", SelfCheck.step("x", true, "ignored").get("detail"), null)
+check("a resolved step reads yes", SelfCheck.step("x", true, null).get("state"), SelfCheck.YES)
+check("a refusal without a reason still says something",
+    SelfCheck.step("x", false, null).get("detail"), "No reason was reported.")
+check("a refusal without a reason still refuses", SelfCheck.step("x", false, "   ").get("state"), SelfCheck.NO)
+check("a refusal keeps its reason", SelfCheck.step("x", false, " boom ").get("detail"), "boom")
+check("an unattempted step is neither", SelfCheck.onRequest("x").get("state"), SelfCheck.NOT_ATTEMPTED)
+ok("a blocked step names its cause", SelfCheck.blocked("x", "y").get("detail").toString().contains("\"y\""))
+
+Map<String, Object> goodShape = new LinkedHashMap<String, Object>()
+goodShape.put("table", "spaces")
+goodShape.put("missing", new ArrayList<String>())
+goodShape.put("failure", null)
+check("a verified catalogue resolves", SelfCheck.catalogue(goodShape).get("state"), SelfCheck.YES)
+check("a catalogue read that returned nothing refuses",
+    SelfCheck.catalogue(null).get("state"), SelfCheck.NO)
+ok("that refusal says nothing was verified",
+    String.valueOf(SelfCheck.catalogue(null).get("detail")).contains("no column was verified"))
+Map<String, Object> badShape = new LinkedHashMap<String, Object>()
+badShape.put("table", "spaces")
+badShape.put("missing", ["spacestatus"])
+badShape.put("failure", null)
+check("a catalogue missing a column refuses", SelfCheck.catalogue(badShape).get("state"), SelfCheck.NO)
+ok("and names the column", String.valueOf(SelfCheck.catalogue(badShape).get("detail")).contains("spacestatus"))
+
+List<Map<String, Object>> unreachable = SelfCheck.unreachable("NoClassDefFoundError - Db")
+check("a read path that cannot be examined reports four refusals", unreachable.size(), 4)
+check("every one of them refuses", SelfCheck.failures(unreachable).size(), 4)
+ok("and carries the reason it was given",
+    String.valueOf(unreachable.get(0).get("detail")).contains("NoClassDefFoundError"))
+ok("a reason that was not given does not become an empty sentence",
+    String.valueOf(SelfCheck.unreachable(null).get(0).get("detail")).contains("no reason was reported"))
+
+/* --- the one line a standard report prints -------------------------------- */
+
+List<Map<String, Object>> clean = [SelfCheck.step("a", true, null), SelfCheck.onRequest("b")]
+check("a report whose checks resolved stays silent", SelfCheck.summary(clean), null)
+check("and paints no box", SelfCheck.shown(clean), false)
+List<Map<String, Object>> broken = [SelfCheck.step("a", false, "gone"), SelfCheck.onRequest("b")]
+ok("a refusal produces exactly one line", SelfCheck.summary(broken).split("\n").length == 1)
+ok("the line names the block", SelfCheck.summary(broken).contains("a - gone"))
+ok("the line says the report above is unaffected", SelfCheck.summary(broken).contains(SelfCheck.SCOPE))
+ok("the line says where the full answer is", SelfCheck.summary(broken).endsWith(SelfCheck.HINT))
+ok("a step nobody ran never produces a line", !SelfCheck.summary(broken).contains(SelfCheck.ON_REQUEST))
+
+/* --- the section, on request ----------------------------------------------- */
+
+String cleanBox = SelfCheck.html(clean)
+ok("a section that found nothing wrong is not painted as a warning",
+    cleanBox.contains(Cfp.DIAG_INFO) && !cleanBox.contains(Cfp.DIAG_WARN))
+ok("it says so in words", cleanBox.contains("Every step that was attempted resolved."))
+check("every step gets a row", cleanBox.count("<tr><td>"), 2)
+ok("a step without a detail prints the placeholder, not an empty cell",
+    cleanBox.contains("<td>" + Cfp.NA + "</td>"))
+String brokenBox = SelfCheck.html(broken)
+ok("a section carrying a refusal is painted as a warning", brokenBox.contains(Cfp.DIAG_WARN))
+ok("it names the state of every block", brokenBox.contains("<td>" + SelfCheck.NO + "</td>"))
+ok("it promises no stack trace and keeps that promise",
+    brokenBox.contains("No stack trace") && !brokenBox.contains("\tat "))
+String hostile = SelfCheck.html([SelfCheck.step("<b>step</b>", false, "<script>alert(1)</script>")])
+ok("a step name from an exception cannot inject markup", !hostile.contains("<b>step</b>"))
+ok("a detail from an exception cannot inject markup", !hostile.contains("<script>"))
+ok("it is escaped rather than dropped", hostile.contains("&lt;script&gt;"))
+check("a check with no steps at all still renders a table",
+    SelfCheck.html(new ArrayList<Map<String, Object>>()).count("<tbody></tbody>"), 1)
+
+/* ---- 29. the source contract of the load-time fix ------------------------- */
+
+/* The fault this release removes was a fault at LOAD time, and the offline suite
+ * cannot load this file into a ScriptRunner. What it can hold is the rule the fix
+ * consists of: these types are not named. */
+for (String forbidden : ["import java.sql.", "import java.lang.reflect.",
+                         "import org.codehaus.groovy.runtime.InvokerHelper"]) {
+    ok("the endpoint does not import " + forbidden.replace("import ", ""),
+        !endpointText.contains(forbidden))
+}
+/* Naming one of these in prose is how the reason survives; DECLARING one is the
+ * dependency that came back as a five hundred, so the pattern looks for a
+ * declaration and not for the word. */
+ok("no JDBC type is declared anywhere in the file",
+    !(endpointText =~ /\b(?:Connection|PreparedStatement|DatabaseMetaData|ResultSet)\s+[a-z][A-Za-z]*\s*(?:=|\)|,|->)/).find())
+ok("the read path declares Object where a connection would stand",
+    endpointText.contains("static Map<String, Object> shape(Object connection, String table") &&
+    endpointText.contains("static Map<String, Object> spaceRows(Object connection)"))
+ok("the callback is coerced rather than proxied by hand",
+    endpointText.contains("return body.asType(callbackType)") &&
+    !endpointText.contains("new InvocationHandler()"))
+ok("no anonymous inner class is built in the read path",
+    !(endpointText =~ /(?s)class Db \{.*?\nnew [A-Z][A-Za-z]*\(\) \{/).find())
+ok("every call on an unnamed type goes through the one dispatch point",
+    endpointText.contains("return target.invokeMethod(method, arguments)"))
+ok("the self-check runs on request only",
+    endpointText.contains('Cfp.booleanParam(queryParams, "diag", false)') &&
+    endpointText.contains("Db.probe(diagRequested)"))
+ok("a standard report prints at most one line about it",
+    endpointText.contains("String readPathLine = diagRequested ? null : SelfCheck.summary(readPath)"))
+ok("a self-check that cannot run does not take the report with it",
+    endpointText.contains("readPath = SelfCheck.unreachable(PageExport.errorDetail(error))"))
+check("the report names the version that produced it", Cfp.VERSION, "4.9")
 
 /* ---- result --------------------------------------------------------------- */
 

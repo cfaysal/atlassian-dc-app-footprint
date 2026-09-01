@@ -11,7 +11,7 @@ These scripts measure that difference.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCappFootprint.groovy`](jira/jiraDCappFootprint.groovy) | Jira Data Center | 3.8 |
-| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.8 |
+| [`confluence/confluenceDCappFootprint.groovy`](confluence/confluenceDCappFootprint.groovy) | Confluence Data Center | 4.9 |
 
 Typical uses: app consolidation before a licence renewal, scoping a Cloud migration,
 building the removal-risk section of an audit report, or justifying to a budget owner
@@ -135,6 +135,7 @@ All parameters are optional and are appended as query parameters.
 | `scanBudgetMs` | milliseconds | `120000` | Time budget for the usage scan. `0` means unlimited. |
 | `appKey` | plugin key | none | Restrict the report to a single app. |
 | `numbers` | `de`, `en` | `de` | Thousands separator style. |
+| `diag` | `true`, `false` | `false` | Run the read-path self-check of the export and print it. Off, the report prints one line and only when a part of that path did not resolve. |
 
 ## Export to Confluence
 
@@ -157,6 +158,20 @@ from inside a ScriptRunner REST endpoint, so the picker refused on every instanc
 opened on. The columns are verified through the database catalogue before the statement
 runs: a column that moved in an upgrade is named in the refusal rather than turning into a
 list of every space there is.
+
+No type on that path is named statically. Every signature and local is `Object`, the calls go
+through one dynamic dispatch point and the SAL callback is a closure coerced to an interface
+loaded by name, so a package that is absent or invisible to the ScriptRunner classloader
+cannot keep the file from loading. That is not a style choice: a resolution failure at load
+time takes down every request, including the ones that would never have run the code.
+
+Where that path breaks, the report says which part of it broke. Add `diag=true` and the page
+carries a table of four building blocks - the executor factory, the callback interface, the
+read-only executor and the catalogue read - each with `yes`, `no` or `not attempted`, and the
+exception type and message where one refused. Without the parameter the report attempts only
+the two steps that cost a class load and stays silent unless one of them refuses, in which
+case it prints one line. This exists for instances whose administrators cannot open
+`atlassian-confluence.log`, where a `500` is a referral number and nothing more.
 
 The parent page field searches while you type and the result list stays until you pick an
 entry or clear the field. If no page matches, the field says so and the parent is created
