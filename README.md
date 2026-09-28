@@ -298,6 +298,18 @@ another platform.
 The walk runs for every workflow, independent of the text scan, and it costs no extra
 retrieval: it reads the descriptor graph the script already holds in memory.
 
+### What this has been checked against
+
+Attribution has been exercised against one third-party workflow app, ScriptRunner, plus Jira's
+own system workflow plugin. The apps a Data Center migration meets most often in this area,
+Jira Misc Workflow Extensions, Workflow Toolbox, JSU and Power Scripts, have not been measured
+here, so read the attribution rules above as tested on that one app.
+
+One case is open rather than merely untested: an app that writes workflow entries through its
+own interface instead of the standard workflow editor controls its own arguments and could omit
+`full.module.key` on a post function. Its post functions would then be attributed through the
+class path alone. Nothing here has measured that.
+
 ### Installed but idle
 
 Most apps never touch a transition. On one instance, 304 installed apps, twelve registering a
