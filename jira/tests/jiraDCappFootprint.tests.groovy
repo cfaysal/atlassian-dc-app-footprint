@@ -925,7 +925,7 @@ ok("Jira wide footprint tables wrap headers and long cell values locally",
     endpointText.contains('.footprint-table th { white-space: normal;') &&
     endpointText.contains('.footprint-table td { overflow-wrap: anywhere; }'))
 ok("Jira Custom Field Footprint uses compact measurement headers",
-    endpointText.contains('<th class="num" title="Issues With Value \\u00B7 Active">Issues \\u00B7 Active</th>') &&
+    endpointText.contains('<th class="num" title="${esc(Fp.ISSUES_ACTIVE_TITLE)}">Issues \\u00B7 Active</th>') &&
     endpointText.contains('<th class="num" title="Issues With Value \\u00B7 Archived">Issues \\u00B7 Archived</th>') &&
     endpointText.contains('<th title="Active Projects Reached Via Screens">Screen Reach \\u00B7 Active</th>') &&
     endpointText.contains('<th title="Archived Projects Reached Via Screens">Screen Reach \\u00B7 Archived</th>'))
@@ -2068,6 +2068,100 @@ def emptyOrNot = { int modules, int configured -> configured > 0 ? "has" : "empt
 ok("the control paints an app with twelve idle modules the same as one with none",
     emptyOrNot(12, 0) == emptyOrNot(0, 0) &&
     Fp.workflowCapability(12, 0) != Fp.workflowCapability(0, 0))
+
+/* ---- OP-1463: the measured total gets its own column ----------------------- */
+
+/* The split is shown exactly when the archive scan ran; the total always is. */
+check("the Issue split is hidden without the archive scan", Fp.showIssueSplit(false), false)
+check("the Issue split is shown with the archive scan", Fp.showIssueSplit(true), true)
+check("the field table spans 9 columns without the split", Fp.fieldTableColumns(false), 9)
+check("the field table spans 11 columns with the split", Fp.fieldTableColumns(true), 11)
+
+/* The All cell follows issuesWithValueState and never invents a zero */
+check("a measured total renders the number", Fp.issueTotalCell(Fp.MEASURED, 1234L, Locale.US), "1,234")
+check("a measured zero stays a zero", Fp.issueTotalCell(Fp.MEASURED, 0L, Locale.US), "0")
+ok("a disabled total renders off", Fp.issueTotalCell(Fp.DISABLED, null, Locale.US).contains(">off<"))
+ok("a budgeted total renders n/m", Fp.issueTotalCell(Fp.BUDGET, null, Locale.US).contains(">n/m<"))
+ok("a failed total renders err", Fp.issueTotalCell(Fp.ERROR, null, Locale.US).contains(">err<"))
+ok("an unevaluated total renders n/e", Fp.issueTotalCell(Fp.NOT_EVALUATED, null, Locale.US).contains(">n/e<"))
+ok("a measured state without a value renders err, not a zero",
+    Fp.issueTotalCell(Fp.MEASURED, null, Locale.US).contains(">err<"))
+
+ok("the All tooltip names the daily refresh",
+    Fp.ISSUES_ALL_TITLE.contains("refreshed once a day"))
+ok("the All tooltip names archived Issues and default values",
+    Fp.ISSUES_ALL_TITLE.contains("archived Issues") && Fp.ISSUES_ALL_TITLE.contains("default values"))
+ok("the Active tooltip explains the snapshot-minus-live subtraction",
+    Fp.ISSUES_ACTIVE_TITLE.contains("All (daily snapshot) minus Archived (live count)"))
+
+/* The field JSON carries the total and marks a disabled split as disabled */
+CustomFieldFootprint splitOffField = new CustomFieldFootprint(
+    id: "customfield_1", issuesWithValue: 5L, issuesWithValueState: Fp.MEASURED,
+    issueSplitState: Fp.DISABLED)
+Map<String, Object> splitOffMap = splitOffField.asMap()
+check("field JSON carries the measured total", splitOffMap.get("issuesWithValue"), 5L)
+check("field JSON marks the split disabled", splitOffMap.get("issueSplitState"), Fp.DISABLED)
+ok("field JSON leaves the disabled split values null, not zero",
+    splitOffMap.containsKey("activeIssuesWithValue") && splitOffMap.get("activeIssuesWithValue") == null &&
+    splitOffMap.containsKey("archivedIssuesWithValue") && splitOffMap.get("archivedIssuesWithValue") == null)
+
+/* Page export: an off pair never stands next to a measured total */
+Map<String, Object> splitOffSummary = new LinkedHashMap<String, Object>(archiveParitySummary)
+splitOffSummary.put("associationState", Fp.MEASURED)
+splitOffSummary.put("issueFieldAssociations", 7L)
+splitOffSummary.put("activeAssociationState", Fp.DISABLED)
+splitOffSummary.put("archivedAssociationState", Fp.DISABLED)
+String splitOffSummaryHtml = PageExport.renderSummary(splitOffSummary, Locale.US, false)
+ok("page-export summary keeps the total without the split",
+    splitOffSummaryHtml.contains("Issue-field associations - all"))
+ok("page-export summary drops the off pair without the split",
+    !splitOffSummaryHtml.contains("Issue-field associations - active") &&
+    !splitOffSummaryHtml.contains("Issue-field associations - archived"))
+ok("page-export summary keeps the pair with the split",
+    PageExport.renderSummary(splitOffSummary, Locale.US, true).contains("Issue-field associations - active"))
+
+Map<String, Object> splitOffAppRow = new LinkedHashMap<String, Object>(archiveParityAppRow)
+splitOffAppRow.put("associationState", Fp.MEASURED)
+splitOffAppRow.put("issueFieldAssociations", 7L)
+splitOffAppRow.put("issueSplitState", Fp.DISABLED)
+String splitOffAppsHtml = PageExport.renderApps(
+    [splitOffAppRow], new DecisionRead(), new ExportOutcome(), Locale.US, false)
+ok("page-export app table shows the total column without the split",
+    splitOffAppsHtml.contains("Issue Associations - All") && splitOffAppsHtml.contains("<td><p>7</p></td>"))
+ok("page-export app table drops the off pair without the split",
+    !splitOffAppsHtml.contains("Issue Associations - Active / Archived") && !splitOffAppsHtml.contains("off / off"))
+
+Map<String, Object> splitOffPayload = [
+    report: [generatedAt: "now"], instance: [:],
+    options: [includeArchived: false, issueCounts: true],
+    summary: splitOffSummary, apps: [splitOffAppRow]
+] as LinkedHashMap<String, Object>
+String splitOffStorage = PageExport.render(splitOffPayload, new DecisionRead(), Locale.US).storage
+ok("page export follows includeArchived=false from the options",
+    splitOffStorage.contains("Issue Associations - All") &&
+    !splitOffStorage.contains("Issue-field associations - active"))
+splitOffPayload.put("options", [includeArchived: true, issueCounts: true])
+ok("page export keeps the split for includeArchived=true",
+    PageExport.render(splitOffPayload, new DecisionRead(), Locale.US).storage
+        .contains("Issue Associations - Active / Archived"))
+
+/* Endpoint wiring, parse-checked only: the closure itself cannot run offline */
+ok("field table renders the All column from the measured total",
+    endpointText.contains('${Fp.issueTotalCell(field.issuesWithValueState, field.issuesWithValue, numberLocale)}') &&
+    endpointText.contains('title="${esc(Fp.ISSUES_ALL_TITLE)}">Issues \\u00B7 All</th>'))
+ok("field table gates the split columns on Fp.showIssueSplit",
+    endpointText.contains('if (Fp.showIssueSplit(includeArchived)) {'))
+ok("field table placement row spans the computed column count",
+    endpointText.contains('colspan="${Fp.fieldTableColumns(includeArchived)}"'))
+ok("app cards gate the Active/Archived pair on Fp.showIssueSplit",
+    (endpointText =~ /if \(Fp\.showIssueSplit\(includeArchived\)\) \{\s*html\.append\("""    <div class="metric">\s*<div class="metric-value">\$\{issueCounts && includeArchived \? num\(app\.activeIssueFieldAssociations\)/).find())
+ok("summary cards gate the Active/Archived pair on Fp.showIssueSplit",
+    (endpointText =~ /if \(Fp\.showIssueSplit\(includeArchived\)\) \{\s*html\.append\("""    <div class="summary-card">\s*<div class="summary-value">\$\{issueCounts && includeArchived \? num\(totalActiveIssueFieldAssociations\)/).find())
+ok("summary cards show the total when the split is hidden",
+    (endpointText =~ /\} else \{\s*html\.append\("""    <div class="summary-card">\s*<div class="summary-value">\$\{issueCounts \? num\(totalIssueFieldAssociations\)/).find() &&
+    endpointText.contains('title="${esc(Fp.ISSUES_ALL_TITLE)}">Issue Associations \\u00B7 All</div>'))
+ok("a disabled split is not overwritten by the total state",
+    endpointText.contains('if (archivedFieldScanState == Fp.DISABLED) {'))
 
 /* ---- result --------------------------------------------------------------- */
 

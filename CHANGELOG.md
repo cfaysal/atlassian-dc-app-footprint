@@ -209,6 +209,23 @@ published in this repository.
 
 ### Changed
 
+- **Jira: the custom-field table shows the measured total as its own column, "Issues
+  · All", and the Active/Archived pair only when the archive scan ran** (OP-1463, no
+  version bump). Without `includeArchived=true` both split cells read `off` although
+  `CustomField.getIssuesWithValue()` had been measured; the total was only visible on the
+  app card. The All cell now follows `issuesWithValueState` (`off`, `n/m`, `err`, never a
+  fabricated zero). Without the archive scan the Active and Archived columns are not
+  rendered at all, the app cards drop the Active/Archived pair next to the existing All
+  card, the summary shows one "Issue Associations · All" card instead of two `off`
+  cards, and the Confluence page export shows "Issue Associations - All" instead of
+  `off / off`. With `includeArchived=true` the output is unchanged apart from the new
+  column and tooltips. The field JSON keeps `issueSplitState: disabled` with null split
+  values when the scan is off, also when the total itself failed or ran out of budget; it
+  used to inherit that state. The header tooltips state the primary-source semantics: the
+  total is Jira's daily custom field usage count and includes archived Issues and Issues
+  with default values, so Active is the daily snapshot minus a live archived count.
+  Verified offline only: the Fp helpers and the page export run in the suite, the HTML
+  endpoint wiring is parse-checked and pinned by source assertions.
 - **Every glyph above ASCII in both endpoints is written as a `\uXXXX` escape, and a CI gate
   keeps it that way** (`4.10` / Jira `3.9`). Twelve raw characters sat in Confluence output
   strings and fourteen in the Jira ones, eleven of them `\u00B7` separators and the rest the

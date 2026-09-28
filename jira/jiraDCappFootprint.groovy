@@ -195,6 +195,48 @@ class Fp {
     }
 
     /*
+     * OP-1463. "Issues All" is CustomField.getIssuesWithValue(): "Returns number of
+     * issues containing at least one non empty value for the custom field" (Javadoc
+     * 10.3.0). Per "Analyzing the usage of custom fields" (Jira DC 10.3) that count
+     * "includes both issues with default values and archived issues" and "is
+     * refreshed once a day". Active = All - Archived is therefore a valid
+     * subtraction, but All is a daily snapshot while Archived is counted live, so
+     * Active can drift by the changes since the last refresh; a negative result is
+     * reported as err. Whether the live archived scan (Fp.hasValue) also counts
+     * default values the way Jira does is UNKNOWN.
+     */
+    static final String ISSUES_ALL_TITLE = "Jira's custom field usage count, refreshed once a day. " +
+        "Includes archived Issues and Issues with default values."
+    static final String ISSUES_ACTIVE_TITLE = "Issues With Value \u00B7 Active. " +
+        "Active = All (daily snapshot) minus Archived (live count), so it can drift by the changes since the last daily refresh."
+
+    /* The Active/Archived pair exists only when the archive scan ran. Without it the
+     * pair would read "off" next to a measured total, so it is not shown at all. */
+    static boolean showIssueSplit(boolean includeArchived) {
+        return includeArchived
+    }
+
+    static int fieldTableColumns(boolean includeArchived) {
+        return showIssueSplit(includeArchived) ? 11 : 9
+    }
+
+    static String issueTotalCell(String state, Number value, Locale locale) {
+        if (state == MEASURED && value != null) {
+            return html(number(value, locale))
+        }
+        if (state == DISABLED) {
+            return "<span class=\"muted\" title=\"Issue counts disabled\">off</span>"
+        }
+        if (state == NOT_EVALUATED) {
+            return "<span class=\"muted\">n/e</span>"
+        }
+        if (state == BUDGET) {
+            return "<span class=\"warn\" title=\"Time budget exhausted before the Issue count\">n/m</span>"
+        }
+        return "<span class=\"bad\" title=\"Issue count failed, see diagnostics\">err</span>"
+    }
+
+    /*
      * Descriptor markers whose modules expose an HTTP surface. Counted separately
      * from the category heuristic because an audit asks a different question here:
      * not "what kind of app is this" but "what does it hang into the web layer".
@@ -2963,7 +3005,7 @@ class PageExport {
         return out.toString()
     }
 
-    static String renderSummary(Map<String, Object> summary, Locale locale) {
+    static String renderSummary(Map<String, Object> summary, Locale locale, boolean showSplit = true) {
         String associationState = str(summary, "associationState", Fp.BUDGET)
         String reachState = str(summary, "reachState", Fp.BUDGET)
         String activeAssociationState = str(summary, "activeAssociationState", Fp.BUDGET)
@@ -2988,8 +3030,10 @@ class PageExport {
             numberOf(impact, "reviewRequired", locale) + " / " + numberOf(impact, "noDetectableFootprint", locale)))
         out.append(metricRow("App custom fields", numberOf(summary, "customFields", locale)))
         out.append(metricRow("Issue-field associations - all", usageText(associationState, Long.valueOf(lng(summary, "issueFieldAssociations")), locale)))
-        out.append(metricRow("Issue-field associations - active", usageText(activeAssociationState, Long.valueOf(lng(summary, "activeIssueFieldAssociations")), locale)))
-        out.append(metricRow("Issue-field associations - archived", usageText(archivedAssociationState, Long.valueOf(lng(summary, "archivedIssueFieldAssociations")), locale)))
+        if (showSplit) {
+            out.append(metricRow("Issue-field associations - active", usageText(activeAssociationState, Long.valueOf(lng(summary, "activeIssueFieldAssociations")), locale)))
+            out.append(metricRow("Issue-field associations - archived", usageText(archivedAssociationState, Long.valueOf(lng(summary, "archivedIssueFieldAssociations")), locale)))
+        }
         out.append(metricRow("Screen placements", numberOf(summary, "screenPlacements", locale)))
         out.append(metricRow("Workflow references", numberOf(summary, "workflowReferences", locale)))
         out.append(metricRow("Workflows scanned", numberOf(summary, "workflowsScanned", locale) + " of " + numberOf(summary, "workflowsTotal", locale)))
@@ -3040,13 +3084,15 @@ class PageExport {
         return out.toString()
     }
 
-    static String renderApps(List<Map<String, Object>> apps, DecisionRead read, ExportOutcome outcome, Locale locale) {
+    static String renderApps(List<Map<String, Object>> apps, DecisionRead read, ExportOutcome outcome, Locale locale,
+                             boolean showSplit = true) {
         StringBuilder out = new StringBuilder()
         out.append("<h2>Apps and Decisions</h2>")
         out.append("<table><tbody><tr>")
         out.append(head("App")).append(head(COL_KEY)).append(head("Vendor")).append(head("Version"))
         out.append(head("Impact"))
-        out.append(head("Enabled Modules")).append(head("Custom Fields")).append(head("Issue Associations - Active / Archived"))
+        out.append(head("Enabled Modules")).append(head("Custom Fields"))
+        out.append(head(showSplit ? "Issue Associations - Active / Archived" : "Issue Associations - All"))
         out.append(head("Screens / Unique")).append(head("Workflows / Active / References"))
         out.append(head("Projects Touched - Active / Archived")).append(head("Issues In Reach - Active / Archived"))
         out.append(head("Status")).append(head(COL_NOTES)).append(head(COL_DECISION))
@@ -3098,9 +3144,10 @@ class PageExport {
             out.append(cell(Fp.html(str(app, "impactLabel", str(app, "impactLevel", Fp.NA)))))
             out.append(cell(Fp.html(numberOf(app, "enabledModules", locale))))
             out.append(cell(Fp.html(numberOf(app, "customFields", locale))))
-            out.append(cell(Fp.html(
+            out.append(cell(Fp.html(showSplit ?
                 usageText(issueSplitState, Long.valueOf(lng(app, "activeIssueFieldAssociations")), locale) + " / " +
-                usageText(issueSplitState, Long.valueOf(lng(app, "archivedIssueFieldAssociations")), locale))))
+                usageText(issueSplitState, Long.valueOf(lng(app, "archivedIssueFieldAssociations")), locale) :
+                usageText(str(app, "associationState", Fp.BUDGET), Long.valueOf(lng(app, "issueFieldAssociations")), locale))))
             out.append(cell(Fp.html(numberOf(app, "screenPlacements", locale) + " / " + numberOf(app, "uniqueScreens", locale))))
             out.append(cell(Fp.html(numberOf(app, "workflows", locale) + " / " + numberOf(app, "activeWorkflows", locale) +
                 " / " + numberOf(app, "workflowReferences", locale))))
@@ -3192,7 +3239,8 @@ class PageExport {
             }
         }
 
-        String appTable = renderApps(apps, read, outcome, locale)
+        boolean showSplit = Fp.showIssueSplit(flag(options, "includeArchived"))
+        String appTable = renderApps(apps, read, outcome, locale, showSplit)
 
         StringBuilder out = new StringBuilder(1 << 16)
         out.append("<p><em>")
@@ -3214,7 +3262,7 @@ class PageExport {
         }
 
         out.append(renderInstance(instance, locale))
-        out.append(renderSummary(summary, locale))
+        out.append(renderSummary(summary, locale, showSplit))
         out.append(appTable)
         out.append(renderModules(apps, locale))
         out.append(renderOrphans(read, outcome))
@@ -4216,6 +4264,11 @@ appFootprint(
             "archived custom-field values -> time budget exhausted")
     }
     for (CustomFieldFootprint field : appCustomFieldSources.keySet()) {
+        if (archivedFieldScanState == Fp.DISABLED) {
+            /* OP-1463. The split was switched off and was marked disabled with the
+             * total. It must not inherit a budget or error state from the total. */
+            continue
+        }
         if (failedFieldSplits.contains(field)) {
             continue
         }
@@ -5189,7 +5242,9 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="summary-value">${num(totalCustomFields)}</div>
         <div class="summary-label">App Custom Fields</div>
     </div>
-    <div class="summary-card">
+""")
+    if (Fp.showIssueSplit(includeArchived)) {
+        html.append("""    <div class="summary-card">
         <div class="summary-value">${issueCounts && includeArchived ? num(totalActiveIssueFieldAssociations) + (issueSplitTotalsPartial ? '<span class="warn" title="The active/archive split is incomplete">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
         <div class="summary-label">Issue Associations \u00B7 Active</div>
     </div>
@@ -5197,7 +5252,15 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="summary-value">${issueCounts && includeArchived ? num(totalArchivedIssueFieldAssociations) + (issueSplitTotalsPartial ? '<span class="warn" title="The active/archive split is incomplete">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
         <div class="summary-label">Issue Associations \u00B7 Archived</div>
     </div>
-    <div class="summary-card">
+""")
+    } else {
+        html.append("""    <div class="summary-card">
+        <div class="summary-value">${issueCounts ? num(totalIssueFieldAssociations) + (issueTotalsPartial ? '<span class="warn" title="Incomplete, lower bound">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
+        <div class="summary-label" title="${esc(Fp.ISSUES_ALL_TITLE)}">Issue Associations \u00B7 All</div>
+    </div>
+""")
+    }
+    html.append("""    <div class="summary-card">
         <div class="summary-value">${num(totalScreenPlacements)}</div>
         <div class="summary-label">Screen Placements</div>
     </div>
@@ -5488,7 +5551,9 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="metric-value">${issueCounts ? num(app.issueFieldAssociations) + (app.issueFieldAssociationsPartial ? '<span class="warn" title="Incomplete, lower bound">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
         <div class="metric-label">Issue Associations &middot; All</div>
     </div>
-    <div class="metric">
+""")
+        if (Fp.showIssueSplit(includeArchived)) {
+            html.append("""    <div class="metric">
         <div class="metric-value">${issueCounts && includeArchived ? num(app.activeIssueFieldAssociations) + (app.issueAssociationSplitPartial ? '<span class="warn" title="Incomplete active/archive split">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
         <div class="metric-label">Issue Associations &middot; Active</div>
     </div>
@@ -5496,7 +5561,9 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
         <div class="metric-value">${issueCounts && includeArchived ? num(app.archivedIssueFieldAssociations) + (app.issueAssociationSplitPartial ? '<span class="warn" title="Incomplete active/archive split">&#42;</span>' : '') : '<span class="muted">off</span>'}</div>
         <div class="metric-label">Issue Associations &middot; Archived</div>
     </div>
-    <div class="metric">
+""")
+        }
+        html.append("""    <div class="metric">
         <div class="metric-value">${num(app.screenPlacements)}</div>
         <div class="metric-label">Field Screen Placements</div>
     </div>
@@ -5579,9 +5646,14 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
             <tr>
                 <th>Field</th>
                 <th>Custom Field Type</th>
-                <th class="num" title="Issues With Value \u00B7 Active">Issues \u00B7 Active</th>
+                <th class="num" title="${esc(Fp.ISSUES_ALL_TITLE)}">Issues \u00B7 All</th>
+""")
+            if (Fp.showIssueSplit(includeArchived)) {
+                html.append("""                <th class="num" title="${esc(Fp.ISSUES_ACTIVE_TITLE)}">Issues \u00B7 Active</th>
                 <th class="num" title="Issues With Value \u00B7 Archived">Issues \u00B7 Archived</th>
-                <th class="num">Contexts</th>
+""")
+            }
+            html.append("""                <th class="num">Contexts</th>
                 <th>Project Scope</th>
                 <th>Issue Type Scope</th>
                 <th class="num">Screens</th>
@@ -5627,9 +5699,14 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
                 html.append("""            <tr>
                 <td><strong>${esc(field.name)}</strong><div class="mono muted">${esc(field.id)}</div></td>
                 <td class="mono">${esc(field.typeKey)}</td>
-                <td class="num">${issueSplitCell(field, false)}</td>
-                <td class="num">${includeArchived ? issueSplitCell(field, true) : '<span class="muted">off</span>'}</td>
-                <td class="num">${contextCell}</td>
+                <td class="num">${Fp.issueTotalCell(field.issuesWithValueState, field.issuesWithValue, numberLocale)}</td>
+""")
+                if (Fp.showIssueSplit(includeArchived)) {
+                    html.append("""                <td class="num">${issueSplitCell(field, false)}</td>
+                <td class="num">${issueSplitCell(field, true)}</td>
+""")
+                }
+                html.append("""                <td class="num">${contextCell}</td>
                 <td>${esc(projectScope)}</td>
                 <td>${esc(issueTypeScope)}</td>
                 <td class="num">${screenCell}</td>
@@ -5640,7 +5717,7 @@ summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--blue)
 
                 if (!field.screenPlacements.isEmpty()) {
                     html.append("""            <tr>
-                <td colspan="10">
+                <td colspan="${Fp.fieldTableColumns(includeArchived)}">
                     <details>
                         <summary>Screen placements for ${esc(field.name)}</summary>
                         <div class="table-wrap">
