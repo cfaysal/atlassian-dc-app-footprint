@@ -210,8 +210,8 @@ published in this repository.
 ### Changed
 
 - **Jira: the custom-field table shows the measured total as its own column, "Issues
-  · All", and the Active/Archived pair only when the archive scan ran** (OP-1463, no
-  version bump). Without `includeArchived=true` both split cells read `off` although
+  · All", and the Active/Archived pair only when the archive scan ran** (`3.11`,
+  OP-1463). Without `includeArchived=true` both split cells read `off` although
   `CustomField.getIssuesWithValue()` had been measured; the total was only visible on the
   app card. The All cell now follows `issuesWithValueState` (`off`, `n/m`, `err`, never a
   fabricated zero). Without the archive scan the Active and Archived columns are not
