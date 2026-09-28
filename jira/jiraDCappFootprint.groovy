@@ -3144,10 +3144,16 @@ class PageExport {
             out.append(cell(Fp.html(str(app, "impactLabel", str(app, "impactLevel", Fp.NA)))))
             out.append(cell(Fp.html(numberOf(app, "enabledModules", locale))))
             out.append(cell(Fp.html(numberOf(app, "customFields", locale))))
-            out.append(cell(Fp.html(showSplit ?
-                usageText(issueSplitState, Long.valueOf(lng(app, "activeIssueFieldAssociations")), locale) + " / " +
-                usageText(issueSplitState, Long.valueOf(lng(app, "archivedIssueFieldAssociations")), locale) :
-                usageText(str(app, "associationState", Fp.BUDGET), Long.valueOf(lng(app, "issueFieldAssociations")), locale))))
+            String issueAssociations
+            if (showSplit) {
+                issueAssociations =
+                    usageText(issueSplitState, Long.valueOf(lng(app, "activeIssueFieldAssociations")), locale) + " / " +
+                    usageText(issueSplitState, Long.valueOf(lng(app, "archivedIssueFieldAssociations")), locale)
+            } else {
+                issueAssociations = usageText(str(app, "associationState", Fp.BUDGET),
+                    Long.valueOf(lng(app, "issueFieldAssociations")), locale)
+            }
+            out.append(cell(Fp.html(issueAssociations)))
             out.append(cell(Fp.html(numberOf(app, "screenPlacements", locale) + " / " + numberOf(app, "uniqueScreens", locale))))
             out.append(cell(Fp.html(numberOf(app, "workflows", locale) + " / " + numberOf(app, "activeWorkflows", locale) +
                 " / " + numberOf(app, "workflowReferences", locale))))
