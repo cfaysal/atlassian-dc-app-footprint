@@ -221,6 +221,19 @@ is `LEGACY_ONLY`, while an omitted or incomplete archive split is `REVIEW_REQUIR
 otherwise empty current footprint. Issue counting is the expensive part and is the
 reason `issueBudgetMs` exists.
 
+The per-field Issue total ("Issues · All") is `CustomField.getIssuesWithValue()`, which
+"Returns number of issues containing at least one non empty value for the custom field"
+(Javadoc 10.3.0). Per
+[Analyzing the usage of custom fields](https://confluence.atlassian.com/adminjiraserver103/analyzing-the-usage-of-custom-fields-1489807514.html)
+(Jira DC 10.3), that count "includes both issues with default values and archived issues"
+and "is refreshed once a day". Three consequences follow. (a) Active = All - Archived is a
+valid subtraction, because the total already contains the archived Issues. (b) The total is
+a daily snapshot while the archived count is read live, so Active is an approximation that
+can drift by the changes since the last refresh; a negative result is reported as `err`.
+(c) The total counts Issues with default values; whether the live archived scan counts
+them the same way is not known, so the split can be skewed where defaults are in play.
+Without `includeArchived=true` only the total is shown.
+
 **Confluence** measures content reach: extension modules per app, and actual macro usage
 counted from the search index. Two rules govern how that number is reported:
 
