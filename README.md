@@ -21,6 +21,16 @@ How this sits next to the Jira and Confluence Cloud Migration Assistants, and ne
 App Usage for Jira, is described under
 [Relation to the Atlassian migration tools](#relation-to-the-atlassian-migration-tools).
 
+## Administrator guides
+
+Choose the guide for the endpoint installed on your product. Each guide gives the URL, UI controls, query parameters, example workflow, output meaning, export steps, and troubleshooting.
+
+| Endpoint | Guide |
+| --- | --- |
+| Jira `appFootprint` | [Run and interpret the Jira App Footprint report](docs/jira-app-footprint.md) |
+| Confluence `appFootprint` | [Run and interpret the Confluence App Footprint report](docs/confluence-app-footprint.md) |
+
+The endpoint name is the same on both products, but the host, inputs, measurements, and CSV rows differ. Use the guide for the product in your browser.
 ## Properties
 
 Both endpoints share the same discipline, and it is the reason the output is worth
@@ -117,7 +127,7 @@ All parameters are optional and are appended as query parameters.
 | `includeArchived` | `true`, `false` | `false` | Measure archived Projects and Issues separately from current impact. The Archived button enables this on demand. |
 | `includeReach` | `true`, `false` | `true` | Measure the Projects and Issues reached through workflows and screens. |
 | `issueCounts` | `true`, `false` | `true` | Count Issues per app-provided custom field. |
-| `issueBudgetMs` | milliseconds | `120000` | Time budget for Issue counting, including the archived value split. `0` means unlimited. Fields beyond the budget are reported as NOT MEASURED, never as zero. |
+| `issueBudgetMs` | milliseconds | `120000` | Time budget shared by Issue counting and the screen-scheme index used by Project reach, including the archived value split. `0` means unlimited. Measurements beyond the budget are reported as not measured, never as zero. |
 | `numbers` | `de`, `en` | `de` | Thousands separator style. |
 
 ### Confluence
